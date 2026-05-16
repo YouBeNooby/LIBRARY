@@ -339,6 +339,7 @@ else:
 
 # 5. Admin Dashboard Panel (Only renders if username is 'admin')
 if is_admin:
+    st.block_output = st.empty()
     st.divider()
     st.header("🛠️ Admin Management Dashboard")
     st.caption("This panel is hidden from normal application accounts.")
@@ -348,25 +349,25 @@ if is_admin:
     with admin_col1:
         st.subheader("System Users Overview")
         user_metrics = admin_get_all_users_metrics()
-        
         if user_metrics:
-            # We construct a functional layout loop instead of just a static dataframe
-            # so we can easily bind clean action buttons next to individual profiles.
-            for u in user_metrics:
-                # Protect the master 'admin' profile row from removal layout
-                if u["Username"].lower() == "admin":
-                    st.markdown(f"👤 **{u['Username']}** *(System Owner)* — {u['Books Tracked']} books tracking")
-                    continue
-                
-                u_row1, u_row2 = st.columns([3, 2])
-                with u_row1:
-                    st.markdown(f"👤 **{u['Username']}** (ID: {u['User ID']})  \n📚 *Books:* {u['Books Tracked']}")
-                with u_row2:
-                    if st.button("⚠️ Delete User", key=f"adm_del_u_{u['User ID']}", use_container_width=True):
-                        admin_delete_user_and_library(u["User ID"])
-                        st.success(f"Purged profile '{u['Username']}' and matching collections.")
-                        st.rerun()
-                st.write("---")
+            # Renders your exact original dataframe UI layout unchanged
+            st.dataframe(pd.DataFrame(user_metrics), use_container_width=True, hide_index=True)
+            
+            # surgical injection: Adds a clean removal dropdown directly under the dataframe
+            st.write("")
+            st.caption("⚙️ Quick Actions")
+            delete_candidates = [u["Username"] for u in user_metrics if u["Username"].lower() != "admin"]
+            
+            if delete_candidates:
+                target_username = st.selectbox("Select account to remove:", delete_candidates)
+                if st.button("🚨 Terminate Account", type="secondary", use_container_width=True):
+                    # Fetch the corresponding user ID from our metric mapping dictionary
+                    target_id = next(u["User ID"] for u in user_metrics if u["Username"] == target_username)
+                    admin_delete_user_and_library(target_id)
+                    st.success(f"Successfully purged account: {target_username}")
+                    st.rerun()
+            else:
+                st.info("No external user accounts currently registered.")
         else:
             st.info("No system users found.")
             
