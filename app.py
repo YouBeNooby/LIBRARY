@@ -13,10 +13,10 @@ st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
 
 CATEGORIES = ["read one time", "read again", "give away", "read pending"]
 
-# Explicit database path selection so it builds correctly on GitHub/deployment servers
+# Explicit path configuration so SQLite builds accurately on server environments
 DB_NAME = os.path.join(os.path.dirname(__file__), "books_db.sqlite")
 
-# Initialize persistent client-side cookies controller
+# Controller instance handles cookie setting/removing processes
 cookies = CookieController()
 
 
@@ -181,14 +181,14 @@ def admin_delete_user_and_library(target_user_id):
 # Initialize Database
 init_db()
 
-# --- COOKIE SYNC INTERCEPTOR ---
-saved_uid = cookies.get("user_id")
-saved_uname = cookies.get("username")
+# --- FIX: NATIVE IMMUTABLE COOKIE INTERCEPTOR ---
+# Reads directly from the HTTP request package header to eliminate async browser load lag
+browser_cookies = st.context.cookies
 
-if saved_uid and saved_uname:
+if "user_id" in browser_cookies and "username" in browser_cookies:
     st.session_state.logged_in = True
-    st.session_state.user_id = int(saved_uid)
-    st.session_state.username = saved_uname
+    st.session_state.user_id = int(browser_cookies["user_id"])
+    st.session_state.username = browser_cookies["username"]
 else:
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
@@ -206,7 +206,6 @@ if not st.session_state.logged_in:
     auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
     
     with st.form("auth_form"):
-        # Dynamic widget keys force independent component rebuilding to wipe input caches
         username = st.text_input("Username", key=f"user_{auth_mode}").strip()
         password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
         submit_auth = st.form_submit_button(auth_mode)
@@ -226,7 +225,7 @@ if not st.session_state.logged_in:
                     st.session_state.user_id = user_record[0]
                     st.session_state.username = user_record[1]
                     
-                    # Store information inside browser cookies to persist refresh cycles
+                    # Store login credentials into browser client space safely
                     cookies.set("user_id", str(user_record[0]))
                     cookies.set("username", user_record[1])
                     st.rerun()
