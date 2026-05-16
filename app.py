@@ -24,7 +24,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Create Users Table (UPDATED: Added registration_date)
+    # Create Users Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,8 +49,6 @@ def init_db():
     conn.commit()
 
     # --- FIX: AUTOMATIC ADMIN INSURANCE ---
-    # The default admin account password is securely set to LeBakri!!
-    # Admin is given a baseline old registration date so they always stay as #1
     admin_password = "LeBakri!!" 
     hashed_admin_password = make_hashes(admin_password)
     
@@ -152,14 +150,9 @@ def load_books_from_db(user_id):
 
 # --- ADMIN ONLY DATABASE FUNCTIONS ---
 def admin_get_all_users_metrics():
-    """
-    Fetches all users, orders them by registration date, and calculates a 
-    gapless, fluid 'User No.' based on current active sign-ups.
-    """
+    """Fetches all users, ordered chronologically with dynamic gapless numbering."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
-    # ROW_NUMBER() recalculates numbers dynamically 1, 2, 3... based on registration date order
     query = """
         SELECT 
             ROW_NUMBER() OVER (ORDER BY users.registration_date ASC) AS dynamic_no,
@@ -174,8 +167,6 @@ def admin_get_all_users_metrics():
     cursor.execute(query)
     rows = cursor.fetchall()
     conn.close()
-    
-    # We pass both the dynamic display number and the hidden database ID back
     return [{"User No.": r[0], "db_id": r[1], "Username": r[2], "Books Tracked": r[3]} for r in rows]
 
 
@@ -215,17 +206,34 @@ if "user_id" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = None
 
+# Initialize inputs tracking variables to handle clear states
+if "prev_auth_mode" not in st.session_state:
+    st.session_state.prev_auth_mode = "Login"
+
 
 # 3. Authentication UI Workflow
 if not st.session_state.logged_in:
     st.title("📚 Book Classifier")
     st.subheader("Please Login or Register to access your collection")
     
-    auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
+    # Track selection changes instantly via keying session state
+    auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True, key="current_auth_mode")
+    
+    # --- FIX: INJECTED WIPE INTERCEPTOR ---
+    # If the current view doesn't match our recorded previous view, wipe the fields
+    if auth_mode != st.session_state.prev_auth_mode:
+        if "form_user" in st.session_state:
+            del st.session_state["form_user"]
+        if "form_pass" in st.session_state:
+            del st.session_state["form_pass"]
+        st.session_state.prev_auth_mode = auth_mode
+        st.rerun()
+    # --------------------------------------
     
     with st.form("auth_form"):
-        username = st.text_input("Username").strip()
-        password = st.text_input("Password", type="password")
+        # We assign stateful keys to the elements so we can manually delete them above
+        username = st.text_input("Username", key="form_user").strip()
+        password = st.text_input("Password", type="password", key="form_pass")
         submit_auth = st.form_submit_button(auth_mode)
         
         if submit_auth:
@@ -234,6 +242,9 @@ if not st.session_state.logged_in:
             elif auth_mode == "Register":
                 if add_user(username, password):
                     st.success("Registration successful! You can now switch to Login.")
+                    # Explicitly clear out fields upon a successful registration build
+                    if "form_user" in st.session_state: del st.session_state["form_user"]
+                    if "form_pass" in st.session_state: del st.session_state["form_pass"]
                 else:
                     st.error("Username already taken. Please pick another.")
             elif auth_mode == "Login":
@@ -377,7 +388,6 @@ if is_admin:
         st.subheader("System Users Overview")
         user_metrics = admin_get_all_users_metrics()
         if user_metrics:
-            # We filter out the internal db_id so it remains invisible to the table layout
             display_df = pd.DataFrame(user_metrics).drop(columns=["db_id"])
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
@@ -388,7 +398,6 @@ if is_admin:
             if delete_candidates:
                 target_username = st.selectbox("Select account to remove:", delete_candidates)
                 if st.button("🚨 Terminate Account", type="secondary", use_container_width=True):
-                    # Fetch internal db_id securely behind the scenes to process deletion
                     target_id = next(u["db_id"] for u in user_metrics if u["Username"] == target_username)
                     admin_delete_user_and_library(target_id)
                     st.success(f"Successfully purged account: {target_username}")
