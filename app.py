@@ -7,7 +7,7 @@ from PIL import Image
 import io
 
 # 1. Page Configuration
-st.set_page_config(page_title="Book Classifier", page_icon="📚", layout="wide")
+st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
 
 CATEGORIES = ["read one time", "read again", "give away", "read pending"]
 DB_NAME = "books_db.sqlite"
