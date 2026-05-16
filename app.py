@@ -264,7 +264,7 @@ if not st.session_state.logged_in:
 is_admin = st.session_state.username.lower() == "admin"
 books_list = load_books_from_db(st.session_state.user_id)
 
-st.title("📚 Book Classifier")
+st.title("📚 Book Library")
 st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*" if is_admin else ""))
 
 # Sidebar
