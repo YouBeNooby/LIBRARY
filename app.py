@@ -163,6 +163,16 @@ def admin_get_all_books():
     return [{"Book ID": r[0], "Owner": r[1], "Title": r[2], "Category": r[3]} for r in rows]
 
 
+def admin_delete_user_and_library(target_user_id):
+    """Deletes user record and safely drops all linked collection profiles."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM books WHERE user_id = ?", (target_user_id,))
+    cursor.execute("DELETE FROM users WHERE id = ?", (target_user_id,))
+    conn.commit()
+    conn.close()
+
+
 # Initialize database structure
 init_db()
 
@@ -329,7 +339,6 @@ else:
 
 # 5. Admin Dashboard Panel (Only renders if username is 'admin')
 if is_admin:
-    st.block_output = st.empty()
     st.divider()
     st.header("🛠️ Admin Management Dashboard")
     st.caption("This panel is hidden from normal application accounts.")
@@ -339,8 +348,25 @@ if is_admin:
     with admin_col1:
         st.subheader("System Users Overview")
         user_metrics = admin_get_all_users_metrics()
+        
         if user_metrics:
-            st.dataframe(pd.DataFrame(user_metrics), use_container_width=True, hide_index=True)
+            # We construct a functional layout loop instead of just a static dataframe
+            # so we can easily bind clean action buttons next to individual profiles.
+            for u in user_metrics:
+                # Protect the master 'admin' profile row from removal layout
+                if u["Username"].lower() == "admin":
+                    st.markdown(f"👤 **{u['Username']}** *(System Owner)* — {u['Books Tracked']} books tracking")
+                    continue
+                
+                u_row1, u_row2 = st.columns([3, 2])
+                with u_row1:
+                    st.markdown(f"👤 **{u['Username']}** (ID: {u['User ID']})  \n📚 *Books:* {u['Books Tracked']}")
+                with u_row2:
+                    if st.button("⚠️ Delete User", key=f"adm_del_u_{u['User ID']}", use_container_width=True):
+                        admin_delete_user_and_library(u["User ID"])
+                        st.success(f"Purged profile '{u['Username']}' and matching collections.")
+                        st.rerun()
+                st.write("---")
         else:
             st.info("No system users found.")
             
