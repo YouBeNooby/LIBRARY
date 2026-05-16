@@ -13,18 +13,14 @@ CATEGORIES = ["read one time", "read again", "give away", "read pending"]
 DB_NAME = "books_db.sqlite"
 
 
-# 2. Database Initialization & Security Functions
+# 2. Core Database & Security Functions
 def make_hashes(password):
-    """Hashes a password for secure storage."""
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 
 def init_db():
-    """Creates tables for users and books if they don't exist and ensures an admin exists."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
-    # Create Users Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,8 +29,6 @@ def init_db():
             registration_date TEXT NOT NULL
         )
     """)
-    
-    # Create Books Table linked to user_id
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS books (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,21 +42,17 @@ def init_db():
     """)
     conn.commit()
 
-    # --- AUTOMATIC ADMIN INSURANCE ---
-    admin_password = "LeBakri!!" 
-    hashed_admin_password = make_hashes(admin_password)
-    
+    # Automatic admin generation
+    hashed_admin_password = make_hashes("LeBakri!!")
     cursor.execute("""
         INSERT OR IGNORE INTO users (username, password, registration_date) 
         VALUES (?, ?, ?)
     """, ("admin", hashed_admin_password, "2000-01-01 00:00:00"))
     conn.commit()
-    
     conn.close()
 
 
 def add_user(username, password):
-    """Registers a new user with the current date/time."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -74,13 +64,12 @@ def add_user(username, password):
         conn.commit()
         success = True
     except sqlite3.IntegrityError:
-        success = False  # Username already exists
+        success = False
     conn.close()
     return success
 
 
 def login_user(username, password):
-    """Checks credentials and returns user tuple or None."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT id, username FROM users WHERE username = ? AND password = ?", (username, make_hashes(password)))
@@ -90,7 +79,6 @@ def login_user(username, password):
 
 
 def update_user_password(user_id, new_password):
-    """Updates the password for a specific user ID securely."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET password = ? WHERE id = ?", (make_hashes(new_password), user_id))
@@ -99,7 +87,6 @@ def update_user_password(user_id, new_password):
 
 
 def add_book_to_db(user_id, title, category, image_bytes, image_name):
-    """Inserts a new book record tied to a specific user."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -111,7 +98,6 @@ def add_book_to_db(user_id, title, category, image_bytes, image_name):
 
 
 def delete_book_from_db(book_id, user_id):
-    """Deletes a book record ensuring it belongs to the logged-in user."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM books WHERE id = ? AND user_id = ?", (book_id, user_id))
@@ -120,7 +106,6 @@ def delete_book_from_db(book_id, user_id):
 
 
 def delete_all_books_from_db(user_id):
-    """Deletes all book records belonging to the logged-in user."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM books WHERE user_id = ?", (user_id,))
@@ -129,34 +114,18 @@ def delete_all_books_from_db(user_id):
 
 
 def load_books_from_db(user_id):
-    """Fetches books belonging exclusively to the logged-in user."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT id, title, category, image_bytes, image_name FROM books WHERE user_id = ?", (user_id,))
     rows = cursor.fetchall()
     conn.close()
-
-    books = []
-    for row in rows:
-        books.append({
-            "id": row[0],
-            "title": row[1],
-            "category": row[2],
-            "image_bytes": row[3],
-            "image_name": row[4]
-        })
-    return books
+    return [{"id": r[0], "title": r[1], "category": r[2], "image_bytes": r[3], "image_name": r[4]} for r in rows]
 
 
-# --- ADMIN ONLY DATABASE FUNCTIONS ---
+# --- ADMIN PIPELINE FUNCTIONS ---
 def admin_get_all_users_metrics():
-    """
-    Fetches all users and runs a dynamic live count of active books. 
-    Refreshes instantly whenever books are added or deleted anywhere.
-    """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
     query = """
         SELECT 
             ROW_NUMBER() OVER (ORDER BY users.registration_date ASC) AS dynamic_no,
@@ -175,22 +144,25 @@ def admin_get_all_users_metrics():
 
 
 def admin_get_all_books():
-    """Fetches every single book record in the system across all users."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     query = """
-        SELECT books.id, users.username, books.title, books.category
+        SELECT 
+            ROW_NUMBER() OVER (ORDER BY books.id ASC) AS dynamic_book_no,
+            users.username, 
+            books.title, 
+            books.category
         FROM books
         JOIN users ON books.user_id = users.id
+        ORDER BY books.id ASC
     """
     cursor.execute(query)
     rows = cursor.fetchall()
     conn.close()
-    return [{"Book ID": r[0], "Owner": r[1], "Title": r[2], "Category": r[3]} for r in rows]
+    return [{"Book No.": r[0], "Owner": r[1], "Title": r[2], "Category": r[3]} for r in rows]
 
 
 def admin_delete_user_and_library(target_user_id):
-    """Deletes user record and safely drops all linked collection profiles."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM books WHERE user_id = ?", (target_user_id,))
@@ -199,10 +171,10 @@ def admin_delete_user_and_library(target_user_id):
     conn.close()
 
 
-# Initialize database structure
+# Initialize Database Structure
 init_db()
 
-# Initialize session state variables for authentication tracking
+# Initialize State Keys
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_id" not in st.session_state:
@@ -251,7 +223,7 @@ books_list = load_books_from_db(st.session_state.user_id)
 st.title("📚 Book Library")
 st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*" if is_admin else ""))
 
-# Sidebar
+# Sidebar Panels
 with st.sidebar:
     st.header("Control Panel")
     if st.button("Log Out", type="primary", use_container_width=True):
@@ -282,18 +254,12 @@ with st.sidebar:
     category = st.selectbox("Category", CATEGORIES)
     uploaded_file = st.file_uploader("Upload book photo", type=["png", "jpg", "jpeg"])
 
-    add_clicked = st.button("Add Book", use_container_width=True)
-
-    if add_clicked:
+    if st.button("Add Book", use_container_width=True):
         if title.strip() == "":
             st.error("Please enter a book title.")
         else:
-            image_bytes = None
-            image_name = None
-            if uploaded_file is not None:
-                image_bytes = uploaded_file.getvalue()
-                image_name = uploaded_file.name
-
+            image_bytes = uploaded_file.getvalue() if uploaded_file else None
+            image_name = uploaded_file.name if uploaded_file else None
             add_book_to_db(st.session_state.user_id, title.strip(), category, image_bytes, image_name)
             st.success(f"Added: {title}")
             st.rerun()
@@ -302,26 +268,19 @@ with st.sidebar:
         st.divider()
         st.subheader("⚠️ Danger Zone")
         confirm_delete = st.checkbox("I want to clear my entire library")
-        
         if st.button("Delete All Books", type="primary", use_container_width=True, disabled=not confirm_delete):
             delete_all_books_from_db(st.session_state.user_id)
             st.success("All books have been cleared.")
             st.rerun()
 
 
-# Main Dashboard Layout
+# Layout Architecture Dashboards
 col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("Your Books")
     if books_list:
-        df = pd.DataFrame([
-            {
-                "Title": b["title"],
-                "Category": b["category"],
-                "Has Photo": "Yes" if b["image_bytes"] else "No"
-            } for b in books_list
-        ])
+        df = pd.DataFrame([{"Title": b["title"], "Category": b["category"], "Has Photo": "Yes" if b["image_bytes"] else "No"} for b in books_list])
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("No books added yet.")
@@ -344,25 +303,21 @@ if books_list:
         with gallery_cols[i % 3]:
             st.markdown(f"**{book['title']}**")
             st.caption(book["category"])
-
             if book["image_bytes"]:
-                image = Image.open(io.BytesIO(book["image_bytes"]))
-                st.image(image, use_container_width=True)
+                st.image(Image.open(io.BytesIO(book["image_bytes"])), use_container_width=True)
             else:
                 st.write("No photo uploaded.")
 
-            # --- FIX: ADDED ST.RERUN() ON INDIVIDUAL BOOK REMOVAL ---
             if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
                 delete_book_from_db(book["id"], st.session_state.user_id)
                 st.success(f"Deleted '{book['title']}'")
-                st.rerun()  # Forces metrics overview table to recalculate counts immediately
+                st.rerun()
 else:
     st.write("Upload some books to display them here.")
 
 
-# 5. Admin Dashboard Panel (Only renders if username is 'admin')
+# 5. Admin Dashboard Panel
 if is_admin:
-    st.block_output = st.empty()
     st.divider()
     st.header("🛠️ Admin Management Dashboard")
     st.caption("This panel is hidden from normal application accounts.")
