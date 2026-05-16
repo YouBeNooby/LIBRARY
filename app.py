@@ -72,6 +72,15 @@ def login_user(username, password):
     return user
 
 
+def update_user_password(user_id, new_password):
+    """Updates the password for a specific user ID securely."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET password = ? WHERE id = ?", (make_hashes(new_password), user_id))
+    conn.commit()
+    conn.close()
+
+
 def add_book_to_db(user_id, title, category, image_bytes, image_name):
     """Inserts a new book record tied to a specific user."""
     conn = sqlite3.connect(DB_NAME)
@@ -206,7 +215,7 @@ books_list = load_books_from_db(st.session_state.user_id)
 st.title("📚 Book Classifier")
 st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*" if is_admin else ""))
 
-# Sidebar for managing books and logging out
+# Sidebar for managing books, profile security, and logging out
 with st.sidebar:
     st.header("Control Panel")
     if st.button("Log Out", type="primary", use_container_width=True):
@@ -214,6 +223,23 @@ with st.sidebar:
         st.session_state.user_id = None
         st.session_state.username = None
         st.rerun()
+        
+    # Change Password Section
+    with st.expander("👤 Account Security"):
+        st.subheader("Change Password")
+        with st.form("change_password_form", clear_on_submit=True):
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+            submit_change = st.form_submit_button("Update Password", use_container_width=True)
+            
+            if submit_change:
+                if not new_password or not confirm_password:
+                    st.error("Password fields cannot be blank.")
+                elif new_password != confirm_password:
+                    st.error("Passwords do not match.")
+                else:
+                    update_user_password(st.session_state.user_id, new_password)
+                    st.success("Password updated successfully!")
         
     st.divider()
     st.header("Add a Book")
