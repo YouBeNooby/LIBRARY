@@ -122,6 +122,38 @@ def load_books_from_db(user_id):
     return books
 
 
+# --- ADMIN ONLY DATABASE FUNCTIONS ---
+def admin_get_all_users_metrics():
+    """Fetches all users and maps how many books they have uploaded."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    query = """
+        SELECT users.id, users.username, COUNT(books.id) AS total_books
+        FROM users
+        LEFT JOIN books ON users.id = books.user_id
+        GROUP BY users.id
+    """
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"User ID": r[0], "Username": r[1], "Books Tracked": r[2]} for r in rows]
+
+
+def admin_get_all_books():
+    """Fetches every single book record in the system across all users."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    query = """
+        SELECT books.id, users.username, books.title, books.category
+        FROM books
+        JOIN users ON books.user_id = users.id
+    """
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"Book ID": r[0], "Owner": r[1], "Title": r[2], "Category": r[3]} for r in rows]
+
+
 # Initialize database structure
 init_db()
 
@@ -168,10 +200,11 @@ if not st.session_state.logged_in:
 
 
 # 4. Main App Interface (Accessible only when logged in)
+is_admin = st.session_state.username.lower() == "admin"
 books_list = load_books_from_db(st.session_state.user_id)
 
 st.title("📚 Book Classifier")
-st.write(f"Logged in as: **{st.session_state.username}**")
+st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*" if is_admin else ""))
 
 # Sidebar for managing books and logging out
 with st.sidebar:
@@ -266,3 +299,29 @@ if books_list:
                 st.rerun()
 else:
     st.write("Upload some books to display them here.")
+
+
+# 5. Admin Dashboard Panel (Only renders if username is 'admin')
+if is_admin:
+    st.block_output = st.empty()
+    st.divider()
+    st.header("🛠️ Admin Management Dashboard")
+    st.caption("This panel is hidden from normal application accounts.")
+    
+    admin_col1, admin_col2 = st.columns(2)
+    
+    with admin_col1:
+        st.subheader("System Users Overview")
+        user_metrics = admin_get_all_users_metrics()
+        if user_metrics:
+            st.dataframe(pd.DataFrame(user_metrics), use_container_width=True, hide_index=True)
+        else:
+            st.info("No system users found.")
+            
+    with admin_col2:
+        st.subheader("Global Library Master Logs")
+        all_books = admin_get_all_books()
+        if all_books:
+            st.dataframe(pd.DataFrame(all_books), use_container_width=True, hide_index=True)
+        else:
+            st.info("No books recorded platform-wide.")
