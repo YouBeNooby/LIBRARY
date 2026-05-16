@@ -93,6 +93,15 @@ def delete_book_from_db(book_id, user_id):
     conn.close()
 
 
+def delete_all_books_from_db(user_id):
+    """Deletes all book records belonging to the logged-in user."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM books WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
 def load_books_from_db(user_id):
     """Fetches books belonging exclusively to the logged-in user."""
     conn = sqlite3.connect(DB_NAME)
@@ -193,6 +202,17 @@ with st.sidebar:
 
             add_book_to_db(st.session_state.user_id, title.strip(), category, image_bytes, image_name)
             st.success(f"Added: {title}")
+            st.rerun()
+
+    # Danger Zone for Mass Deletion
+    if books_list:
+        st.divider()
+        st.subheader("⚠️ Danger Zone")
+        confirm_delete = st.checkbox("I want to clear my entire library")
+        
+        if st.button("Delete All Books", type="primary", use_container_width=True, disabled=not confirm_delete):
+            delete_all_books_from_db(st.session_state.user_id)
+            st.success("All books have been cleared.")
             st.rerun()
 
 
