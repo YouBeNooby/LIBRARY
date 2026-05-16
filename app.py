@@ -157,7 +157,6 @@ def admin_get_all_users_metrics():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Live counts utilize an aggregate grouping execution block
     query = """
         SELECT 
             ROW_NUMBER() OVER (ORDER BY users.registration_date ASC) AS dynamic_no,
@@ -352,10 +351,11 @@ if books_list:
             else:
                 st.write("No photo uploaded.")
 
+            # --- FIX: ADDED ST.RERUN() ON INDIVIDUAL BOOK REMOVAL ---
             if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
                 delete_book_from_db(book["id"], st.session_state.user_id)
                 st.success(f"Deleted '{book['title']}'")
-                st.rerun()
+                st.rerun()  # Forces metrics overview table to recalculate counts immediately
 else:
     st.write("Upload some books to display them here.")
 
