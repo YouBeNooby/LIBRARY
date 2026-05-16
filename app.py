@@ -6,7 +6,7 @@ import streamlit as st
 from PIL import Image
 import io
 
-# 1. Page Configuration (UPDATED: Tab title changed to Book Library)
+# 1. Page Configuration
 st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
 
 CATEGORIES = ["read one time", "read again", "give away", "read pending"]
@@ -206,30 +206,19 @@ if "user_id" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = None
 
-# Initialize inputs tracking variables to handle clear states
-if "prev_auth_mode" not in st.session_state:
-    st.session_state.prev_auth_mode = "Login"
-
 
 # 3. Authentication UI Workflow
 if not st.session_state.logged_in:
-    # UPDATED: Changed page title to Book Library
     st.title("📚 Book Library")
     st.subheader("Please Login or Register to access your collection")
     
-    auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True, key="current_auth_mode")
-    
-    if auth_mode != st.session_state.prev_auth_mode:
-        if "form_user" in st.session_state:
-            del st.session_state["form_user"]
-        if "form_pass" in st.session_state:
-            del st.session_state["form_pass"]
-        st.session_state.prev_auth_mode = auth_mode
-        st.rerun()
+    auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
     
     with st.form("auth_form"):
-        username = st.text_input("Username", key="form_user").strip()
-        password = st.text_input("Password", type="password", key="form_pass")
+        # Dynamically switching keys based on auth_mode forces 
+        # Streamlit to wipe the inputs clean on transition.
+        username = st.text_input("Username", key=f"user_{auth_mode}").strip()
+        password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
         submit_auth = st.form_submit_button(auth_mode)
         
         if submit_auth:
@@ -238,8 +227,6 @@ if not st.session_state.logged_in:
             elif auth_mode == "Register":
                 if add_user(username, password):
                     st.success("Registration successful! You can now switch to Login.")
-                    if "form_user" in st.session_state: del st.session_state["form_user"]
-                    if "form_pass" in st.session_state: del st.session_state["form_pass"]
                 else:
                     st.error("Username already taken. Please pick another.")
             elif auth_mode == "Login":
@@ -259,7 +246,6 @@ if not st.session_state.logged_in:
 is_admin = st.session_state.username.lower() == "admin"
 books_list = load_books_from_db(st.session_state.user_id)
 
-# UPDATED: Changed main heading to Book Library
 st.title("📚 Book Library")
 st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*" if is_admin else ""))
 
