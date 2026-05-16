@@ -48,7 +48,7 @@ def init_db():
     """)
     conn.commit()
 
-    # --- FIX: AUTOMATIC ADMIN INSURANCE ---
+    # --- AUTOMATIC ADMIN INSURANCE ---
     admin_password = "LeBakri!!" 
     hashed_admin_password = make_hashes(admin_password)
     
@@ -150,9 +150,14 @@ def load_books_from_db(user_id):
 
 # --- ADMIN ONLY DATABASE FUNCTIONS ---
 def admin_get_all_users_metrics():
-    """Fetches all users, ordered chronologically with dynamic gapless numbering."""
+    """
+    Fetches all users and runs a dynamic live count of active books. 
+    Refreshes instantly whenever books are added or deleted anywhere.
+    """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    
+    # Live counts utilize an aggregate grouping execution block
     query = """
         SELECT 
             ROW_NUMBER() OVER (ORDER BY users.registration_date ASC) AS dynamic_no,
@@ -215,8 +220,6 @@ if not st.session_state.logged_in:
     auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
     
     with st.form("auth_form"):
-        # Dynamically switching keys based on auth_mode forces 
-        # Streamlit to wipe the inputs clean on transition.
         username = st.text_input("Username", key=f"user_{auth_mode}").strip()
         password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
         submit_auth = st.form_submit_button(auth_mode)
