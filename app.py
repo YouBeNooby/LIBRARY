@@ -6,7 +6,6 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 import io
-from streamlit_cookies_controller import CookieController
 
 # 1. Page Configuration
 st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
@@ -15,9 +14,6 @@ CATEGORIES = ["read one time", "read again", "give away", "read pending"]
 
 # Explicit path configuration so SQLite builds accurately on server environments
 DB_NAME = os.path.join(os.path.dirname(__file__), "books_db.sqlite")
-
-# Controller instance handles cookie setting/removing processes
-cookies = CookieController()
 
 
 # 2. Core Database & Security Functions
@@ -80,6 +76,15 @@ def login_user(username, password):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT id, username FROM users WHERE username = ? AND password = ?", (username, make_hashes(password)))
+    user = cursor.fetchone()
+    conn.close()
+    return user
+
+
+def get_user_by_id(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username FROM users WHERE id = ?", (user_id,))
     user = cursor.fetchone()
     conn.close()
     return user
@@ -181,21 +186,22 @@ def admin_delete_user_and_library(target_user_id):
 # Initialize Database
 init_db()
 
-# --- FIX: NATIVE IMMUTABLE COOKIE INTERCEPTOR ---
-# Reads directly from the HTTP request package header to eliminate async browser load lag
-browser_cookies = st.context.cookies
+# --- FIX: NATIVE IMMUTABLE URL RECOVERY PARSER ---
+# Directly targets the web browser's URL query string parameters to eliminate any reload delays
+if "uid" in st.query_params:
+    target_uid = int(st.query_params["uid"])
+    user_record = get_user_by_id(target_uid)
+    if user_record:
+        st.session_state.logged_in = True
+        st.session_state.user_id = user_record[0]
+        st.session_state.username = user_record[1]
 
-if "user_id" in browser_cookies and "username" in browser_cookies:
-    st.session_state.logged_in = True
-    st.session_state.user_id = int(browser_cookies["user_id"])
-    st.session_state.username = browser_cookies["username"]
-else:
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-    if "user_id" not in st.session_state:
-        st.session_state.user_id = None
-    if "username" not in st.session_state:
-        st.session_state.username = None
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+if "username" not in st.session_state:
+    st.session_state.username = None
 
 
 # 3. Authentication UI Workflow
@@ -225,9 +231,8 @@ if not st.session_state.logged_in:
                     st.session_state.user_id = user_record[0]
                     st.session_state.username = user_record[1]
                     
-                    # Store login credentials into browser client space safely
-                    cookies.set("user_id", str(user_record[0]))
-                    cookies.set("username", user_record[1])
+                    # Store information inside client browser query string parameter natively
+                    st.query_params["uid"] = str(user_record[0])
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -248,8 +253,8 @@ with st.sidebar:
         st.session_state.logged_in = False
         st.session_state.user_id = None
         st.session_state.username = None
-        cookies.remove("user_id")
-        cookies.remove("username")
+        # Drop parameter states instantly on logout
+        st.query_params.clear()
         st.rerun()
         
     with st.expander("👤 Account Security"):
