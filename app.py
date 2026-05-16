@@ -1,16 +1,23 @@
 import sqlite3
 import hashlib
+import os
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
 import io
+from streamlit_cookies_controller import CookieController
 
 # 1. Page Configuration
 st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
 
 CATEGORIES = ["read one time", "read again", "give away", "read pending"]
-DB_NAME = "books_db.sqlite"
+
+# Explicit database path selection so it builds correctly on GitHub/deployment servers
+DB_NAME = os.path.join(os.path.dirname(__file__), "books_db.sqlite")
+
+# Initialize persistent client-side cookies controller
+cookies = CookieController()
 
 
 # 2. Core Database & Security Functions
@@ -42,7 +49,7 @@ def init_db():
     """)
     conn.commit()
 
-    # Automatic admin generation
+    # Automatic admin account recovery insurance
     hashed_admin_password = make_hashes("LeBakri!!")
     cursor.execute("""
         INSERT OR IGNORE INTO users (username, password, registration_date) 
@@ -171,16 +178,24 @@ def admin_delete_user_and_library(target_user_id):
     conn.close()
 
 
-# Initialize Database Structure
+# Initialize Database
 init_db()
 
-# Initialize State Keys
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "user_id" not in st.session_state:
-    st.session_state.user_id = None
-if "username" not in st.session_state:
-    st.session_state.username = None
+# --- COOKIE SYNC INTERCEPTOR ---
+saved_uid = cookies.get("user_id")
+saved_uname = cookies.get("username")
+
+if saved_uid and saved_uname:
+    st.session_state.logged_in = True
+    st.session_state.user_id = int(saved_uid)
+    st.session_state.username = saved_uname
+else:
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = None
+    if "username" not in st.session_state:
+        st.session_state.username = None
 
 
 # 3. Authentication UI Workflow
@@ -191,6 +206,7 @@ if not st.session_state.logged_in:
     auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
     
     with st.form("auth_form"):
+        # Dynamic widget keys force independent component rebuilding to wipe input caches
         username = st.text_input("Username", key=f"user_{auth_mode}").strip()
         password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
         submit_auth = st.form_submit_button(auth_mode)
@@ -209,7 +225,10 @@ if not st.session_state.logged_in:
                     st.session_state.logged_in = True
                     st.session_state.user_id = user_record[0]
                     st.session_state.username = user_record[1]
-                    st.success(f"Welcome back, {username}!")
+                    
+                    # Store information inside browser cookies to persist refresh cycles
+                    cookies.set("user_id", str(user_record[0]))
+                    cookies.set("username", user_record[1])
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -230,6 +249,8 @@ with st.sidebar:
         st.session_state.logged_in = False
         st.session_state.user_id = None
         st.session_state.username = None
+        cookies.remove("user_id")
+        cookies.remove("username")
         st.rerun()
         
     with st.expander("👤 Account Security"):
