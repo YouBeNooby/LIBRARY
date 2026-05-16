@@ -1,5 +1,6 @@
 import sqlite3
 import hashlib
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -23,12 +24,13 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Create Users Table
+    # Create Users Table (UPDATED: Added registration_date)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            registration_date TEXT NOT NULL
         )
     """)
     
@@ -47,23 +49,30 @@ def init_db():
     conn.commit()
 
     # --- FIX: AUTOMATIC ADMIN INSURANCE ---
-    # The default admin account password is now securely set to LeBakri!!
+    # The default admin account password is securely set to LeBakri!!
+    # Admin is given a baseline old registration date so they always stay as #1
     admin_password = "LeBakri!!" 
     hashed_admin_password = make_hashes(admin_password)
     
-    cursor.execute("INSERT OR IGNORE INTO users (username, password) VALUES (?, ?)", ("admin", hashed_admin_password))
+    cursor.execute("""
+        INSERT OR IGNORE INTO users (username, password, registration_date) 
+        VALUES (?, ?, ?)
+    """, ("admin", hashed_admin_password, "2000-01-01 00:00:00"))
     conn.commit()
-    # --------------------------------------
     
     conn.close()
 
 
 def add_user(username, password):
-    """Registers a new user."""
+    """Registers a new user with the current date/time."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, make_hashes(password)))
+        cursor.execute("""
+            INSERT INTO users (username, password, registration_date) 
+            VALUES (?, ?, ?)
+        """, (username, make_hashes(password), current_time))
         conn.commit()
         success = True
     except sqlite3.IntegrityError:
@@ -143,19 +152,31 @@ def load_books_from_db(user_id):
 
 # --- ADMIN ONLY DATABASE FUNCTIONS ---
 def admin_get_all_users_metrics():
-    """Fetches all users and maps how many books they have uploaded."""
+    """
+    Fetches all users, orders them by registration date, and calculates a 
+    gapless, fluid 'User No.' based on current active sign-ups.
+    """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    
+    # ROW_NUMBER() recalculates numbers dynamically 1, 2, 3... based on registration date order
     query = """
-        SELECT users.id, users.username, COUNT(books.id) AS total_books
+        SELECT 
+            ROW_NUMBER() OVER (ORDER BY users.registration_date ASC) AS dynamic_no,
+            users.id, 
+            users.username, 
+            COUNT(books.id) AS total_books
         FROM users
         LEFT JOIN books ON users.id = books.user_id
         GROUP BY users.id
+        ORDER BY users.registration_date ASC
     """
     cursor.execute(query)
     rows = cursor.fetchall()
     conn.close()
-    return [{"User ID": r[0], "Username": r[1], "Books Tracked": r[2]} for r in rows]
+    
+    # We pass both the dynamic display number and the hidden database ID back
+    return [{"User No.": r[0], "db_id": r[1], "Username": r[2], "Books Tracked": r[3]} for r in rows]
 
 
 def admin_get_all_books():
@@ -225,7 +246,7 @@ if not st.session_state.logged_in:
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
-    st.stop()  # Stop app execution here if user is not authenticated
+    st.stop()
 
 
 # 4. Main App Interface (Accessible only when logged in)
@@ -235,7 +256,7 @@ books_list = load_books_from_db(st.session_state.user_id)
 st.title("📚 Book Classifier")
 st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*" if is_admin else ""))
 
-# Sidebar for managing books, profile security, and logging out
+# Sidebar
 with st.sidebar:
     st.header("Control Panel")
     if st.button("Log Out", type="primary", use_container_width=True):
@@ -244,7 +265,6 @@ with st.sidebar:
         st.session_state.username = None
         st.rerun()
         
-    # Change Password Section
     with st.expander("👤 Account Security"):
         st.subheader("Change Password")
         with st.form("change_password_form", clear_on_submit=True):
@@ -283,7 +303,6 @@ with st.sidebar:
             st.success(f"Added: {title}")
             st.rerun()
 
-    # Danger Zone for Mass Deletion
     if books_list:
         st.divider()
         st.subheader("⚠️ Danger Zone")
@@ -324,7 +343,6 @@ with col2:
 st.divider()
 st.subheader("Book Gallery")
 
-# Display personalized Gallery with Delete Feature
 if books_list:
     gallery_cols = st.columns(3)
     for i, book in enumerate(books_list):
@@ -338,7 +356,6 @@ if books_list:
             else:
                 st.write("No photo uploaded.")
 
-            # Unique key utilizes database entry ID to safely isolate actions
             if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
                 delete_book_from_db(book["id"], st.session_state.user_id)
                 st.success(f"Deleted '{book['title']}'")
@@ -360,7 +377,9 @@ if is_admin:
         st.subheader("System Users Overview")
         user_metrics = admin_get_all_users_metrics()
         if user_metrics:
-            st.dataframe(pd.DataFrame(user_metrics), use_container_width=True, hide_index=True)
+            # We filter out the internal db_id so it remains invisible to the table layout
+            display_df = pd.DataFrame(user_metrics).drop(columns=["db_id"])
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
             
             st.write("")
             st.caption("⚙️ Quick Actions")
@@ -369,7 +388,8 @@ if is_admin:
             if delete_candidates:
                 target_username = st.selectbox("Select account to remove:", delete_candidates)
                 if st.button("🚨 Terminate Account", type="secondary", use_container_width=True):
-                    target_id = next(u["User ID"] for u in user_metrics if u["Username"] == target_username)
+                    # Fetch internal db_id securely behind the scenes to process deletion
+                    target_id = next(u["db_id"] for u in user_metrics if u["Username"] == target_username)
                     admin_delete_user_and_library(target_id)
                     st.success(f"Successfully purged account: {target_username}")
                     st.rerun()
