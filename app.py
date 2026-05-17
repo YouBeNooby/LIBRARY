@@ -10,7 +10,15 @@ import io
 # 1. Page Configuration
 st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
 
-CATEGORIES = ["read one time", "read again", "give away", "read pending"]
+# Expanded list converted to Sentence Case
+CATEGORIES = [
+    "Read pending",
+    "Reading in progress",
+    "Already read", 
+    "Read again", 
+    "Give away", 
+    "Wishlist"
+]
 
 # Explicit path configuration so SQLite builds accurately on server environments
 DB_NAME = os.path.join(os.path.dirname(__file__), "books_db.sqlite")
@@ -109,6 +117,25 @@ def add_book_to_db(user_id, title, category, image_bytes, image_name):
     conn.close()
 
 
+def update_book_in_db(book_id, user_id, title, category, image_bytes=None, image_name=None):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    if image_bytes:
+        cursor.execute("""
+            UPDATE books 
+            SET title = ?, category = ?, image_bytes = ?, image_name = ?
+            WHERE id = ? AND user_id = ?
+        """, (title, category, image_bytes, image_name, book_id, user_id))
+    else:
+        cursor.execute("""
+            UPDATE books 
+            SET title = ?, category = ?
+            WHERE id = ? AND user_id = ?
+        """, (title, category, book_id, user_id))
+    conn.commit()
+    conn.close()
+
+
 def delete_book_from_db(book_id, user_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -187,7 +214,6 @@ def admin_delete_user_and_library(target_user_id):
 init_db()
 
 # --- FIX: NATIVE IMMUTABLE URL RECOVERY PARSER ---
-# Directly targets the web browser's URL query string parameters to eliminate any reload delays
 if "uid" in st.query_params:
     target_uid = int(st.query_params["uid"])
     user_record = get_user_by_id(target_uid)
@@ -202,6 +228,8 @@ if "user_id" not in st.session_state:
     st.session_state.user_id = None
 if "username" not in st.session_state:
     st.session_state.username = None
+if "editing_book_id" not in st.session_state:
+    st.session_state.editing_book_id = None
 
 
 # 3. Authentication UI Workflow
@@ -231,7 +259,6 @@ if not st.session_state.logged_in:
                     st.session_state.user_id = user_record[0]
                     st.session_state.username = user_record[1]
                     
-                    # Store information inside client browser query string parameter natively
                     st.query_params["uid"] = str(user_record[0])
                     st.rerun()
                 else:
@@ -253,7 +280,7 @@ with st.sidebar:
         st.session_state.logged_in = False
         st.session_state.user_id = None
         st.session_state.username = None
-        # Drop parameter states instantly on logout
+        st.session_state.editing_book_id = None
         st.query_params.clear()
         st.rerun()
         
@@ -276,8 +303,8 @@ with st.sidebar:
     st.divider()
     st.header("Add a Book")
     title = st.text_input("Book title")
-    category = st.selectbox("Category", CATEGORIES)
-    uploaded_file = st.file_uploader("Upload book photo", type=["png", "jpg", "jpeg"])
+    category = st.selectbox("Category", CATEGORIES, key="add_category")
+    uploaded_file = st.file_uploader("Upload book photo", type=["png", "jpg", "jpeg"], key="add_photo")
 
     if st.button("Add Book", use_container_width=True):
         if title.strip() == "":
@@ -313,6 +340,7 @@ with col1:
 with col2:
     st.subheader("Category Summary")
     if books_list:
+        # Avoid crashing chart if old data includes legacy categories not listed in current sentence case list
         counts = pd.DataFrame(books_list)["category"].value_counts().reindex(CATEGORIES, fill_value=0)
         st.bar_chart(counts)
     else:
@@ -326,17 +354,56 @@ if books_list:
     gallery_cols = st.columns(3)
     for i, book in enumerate(books_list):
         with gallery_cols[i % 3]:
-            st.markdown(f"**{book['title']}**")
-            st.caption(book["category"])
-            if book["image_bytes"]:
-                st.image(Image.open(io.BytesIO(book["image_bytes"])), use_container_width=True)
+            # Check if this specific book is undergoing modifications
+            if st.session_state.editing_book_id == book["id"]:
+                st.markdown(f"#### 📝 Edit Details")
+                with st.form(f"edit_form_{book['id']}", clear_on_submit=True):
+                    edit_title = st.text_input("Book Title", value=book["title"])
+                    
+                    # Safe index retrieval if the old database contains legacy string variations
+                    default_idx = CATEGORIES.index(book["category"]) if book["category"] in CATEGORIES else 0
+                    edit_category = st.selectbox("Category", CATEGORIES, index=default_idx)
+                    edit_file = st.file_uploader("Replace Book Photo (Optional)", type=["png", "jpg", "jpeg"])
+                    
+                    btn_save, btn_cancel = st.columns(2)
+                    with btn_save:
+                        save_changes = st.form_submit_button("Save", use_container_width=True)
+                    with btn_cancel:
+                        cancel_changes = st.form_submit_button("Cancel", use_container_width=True)
+                    
+                    if save_changes:
+                        if edit_title.strip() == "":
+                            st.error("Title cannot be blank.")
+                        else:
+                            img_bytes = edit_file.getvalue() if edit_file else None
+                            img_name = edit_file.name if edit_file else None
+                            update_book_in_db(book["id"], st.session_state.user_id, edit_title.strip(), edit_category, img_bytes, img_name)
+                            st.session_state.editing_book_id = None
+                            st.rerun()
+                            
+                    if cancel_changes:
+                        st.session_state.editing_book_id = None
+                        st.rerun()
             else:
-                st.write("No photo uploaded.")
+                # Normal Mode Display UI Card
+                st.markdown(f"**{book['title']}**")
+                st.caption(book["category"])
+                if book["image_bytes"]:
+                    st.image(Image.open(io.BytesIO(book["image_bytes"])), use_container_width=True)
+                else:
+                    st.write("No photo uploaded.")
 
-            if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
-                delete_book_from_db(book["id"], st.session_state.user_id)
-                st.success(f"Deleted '{book['title']}'")
-                st.rerun()
+                # Management Actions layout
+                action_edit, action_del = st.columns(2)
+                with action_edit:
+                    if st.button(f"📝 Edit", key=f"edit_btn_{book['id']}", use_container_width=True):
+                        st.session_state.editing_book_id = book["id"]
+                        st.rerun()
+                with action_del:
+                    if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
+                        delete_book_from_db(book["id"], st.session_state.user_id)
+                        st.success(f"Deleted '{book['title']}'")
+                        st.rerun()
 else:
     st.write("Upload some books to display them here.")
 
