@@ -6,6 +6,7 @@ from PIL import Image
 import io
 import secrets
 from sqlalchemy import text
+import extra_streamlit_components as stx
 
 # 1. Page Configuration
 st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
@@ -51,7 +52,7 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """))
-        # Create user sessions table (For non-URL persistent tracking)
+        # Create user sessions table (For secure server-side tracking)
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS user_sessions (
                 token TEXT PRIMARY KEY,
@@ -211,21 +212,26 @@ if "username" not in st.session_state:
     st.session_state.username = None
 if "editing_book_id" not in st.session_state:
     st.session_state.editing_book_id = None
-if "session_token" not in st.session_state:
-    st.session_state.session_token = None
 
-# NON-URL AUTOMATED SESSION VERIFIER
-# If the user has an active memory token from keeping the app open/awake
-if st.session_state.session_token and not st.session_state.logged_in:
-    token_check = conn.query(
-        "SELECT user_id, username FROM user_sessions WHERE token = :t",
-        params={"t": st.session_state.session_token},
-        ttl=0
-    )
-    if not token_check.empty:
-        st.session_state.logged_in = True
-        st.session_state.user_id = int(token_check.iloc[0]["user_id"])
-        st.session_state.username = token_check.iloc[0]["username"]
+# Initialize Cookie Manager
+cookie_manager = stx.CookieManager()
+
+# BROWSER COOKIE AUTO-LOGIN VERIFIER
+if not st.session_state.logged_in:
+    # Read cookie directly from user's hard drive
+    cookie_token = cookie_manager.get(cookie="book_library_token")
+    
+    if cookie_token:
+        # Check if cookie token exists in our secure database session registry
+        token_check = conn.query(
+            "SELECT user_id, username FROM user_sessions WHERE token = :t",
+            params={"t": cookie_token},
+            ttl=0
+        )
+        if not token_check.empty:
+            st.session_state.logged_in = True
+            st.session_state.user_id = int(token_check.iloc[0]["user_id"])
+            st.session_state.username = token_check.iloc[0]["username"]
 
 
 # 4. Authentication UI Workflow
@@ -239,7 +245,7 @@ if not st.session_state.logged_in:
         username = st.text_input("Username", key=f"user_{auth_mode}").strip()
         password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
         
-        # Checkbox matches logic behavior: only displays during active user logins
+        # Display checkbox only during an active login attempt
         remember_me = False
         if auth_mode == "Login":
             remember_me = st.checkbox("Keep me logged in", key="remember_Login")
@@ -266,13 +272,21 @@ if not st.session_state.logged_in:
                     if remember_me:
                         secure_token = secrets.token_urlsafe(32)
                         current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        # Store session validation key on Supabase
                         with conn.session as session:
                             session.execute(text("""
                                 INSERT INTO user_sessions (token, user_id, username, created_at)
                                 VALUES (:t, :uid, :u, :c)
                             """), {"t": secure_token, "uid": user_record[0], "u": user_record[1], "c": current_timestamp})
                             session.commit()
-                        st.session_state.session_token = secure_token
+                            
+                        # Set a persistent browser cookie that expires in 30 days
+                        cookie_manager.set(
+                            cookie="book_library_token",
+                            val=secure_token,
+                            expires_at=datetime.now() + pd.Timedelta(days=30)
+                        )
                     
                     st.query_params.clear()
                     st.rerun()
@@ -292,17 +306,19 @@ st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*
 with st.sidebar:
     st.header("Control Panel")
     if st.button("Log Out", type="primary", use_container_width=True):
-        # Purge token database tracking on explicit manual disconnect requests
-        if st.session_state.session_token:
+        # Fetch the active cookie token to clear tracking
+        active_cookie = cookie_manager.get(cookie="book_library_token")
+        if active_cookie:
             with conn.session as session:
-                session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": st.session_state.session_token})
+                session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": active_cookie})
                 session.commit()
+            # Explicitly delete the cookie file off the client's hard drive
+            cookie_manager.delete(cookie="book_library_token")
                 
         st.session_state.logged_in = False
         st.session_state.user_id = None
         st.session_state.username = None
         st.session_state.editing_book_id = None
-        st.session_state.session_token = None
         st.query_params.clear()
         st.rerun()
         
