@@ -53,16 +53,20 @@ def init_db():
         """)
         conn.commit()
         
-        # Hardcoded Admin Account Insurance
-        hashed_admin_password = make_hashes("LeBakri!!")
-        try:
+        # Updated Admin Account Password
+        hashed_admin_password = make_hashes("LeBakri!!18")
+        
+        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+        admin_exists = cursor.fetchone()
+        
+        if admin_exists:
+            cursor.execute("UPDATE users SET password = ? WHERE username = 'admin'", (hashed_admin_password,))
+        else:
             cursor.execute("""
                 INSERT INTO users (username, password, registration_date) 
                 VALUES (?, ?, ?)
             """, ("admin", hashed_admin_password, "2000-01-01 00:00:00"))
-            conn.commit()
-        except sqlite3.IntegrityError:
-            pass
+        conn.commit()
 
 
 def add_user(username, password):
