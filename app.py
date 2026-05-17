@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 import io
+from sqlalchemy import text  # Required for SQLAlchemy 2.0 execution compatibility
 
 # 1. Page Configuration
 st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
@@ -18,7 +19,7 @@ CATEGORIES = [
 ]
 
 # 2. Establish Persistent Cloud Database Connection
-# This seamlessly grabs the [connections.postgresql] block from your Streamlit Cloud secrets text box
+# This grabs the configuration parameters directly from your Streamlit secrets environment
 conn = st.connection("postgresql", type="sql")
 
 
@@ -30,15 +31,15 @@ def make_hashes(password):
 def init_db():
     # PostgreSQL architectural definitions: SERIAL handles autoincrement, BYTEA handles image binary objects
     with conn.session as session:
-        session.execute("""
+        session.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
                 registration_date TEXT NOT NULL
             )
-        """)
-        session.execute("""
+        """))
+        session.execute(text("""
             CREATE TABLE IF NOT EXISTS books (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL,
@@ -48,16 +49,16 @@ def init_db():
                 image_name TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
-        """)
+        """))
         session.commit()
 
         # Automatic admin account recovery insurance
         hashed_admin_password = make_hashes("LeBakri!!")
-        session.execute("""
+        session.execute(text("""
             INSERT INTO users (username, password, registration_date) 
             VALUES (:username, :password, :reg_date)
             ON CONFLICT (username) DO NOTHING
-        """, {"username": "admin", "password": hashed_admin_password, "reg_date": "2000-01-01 00:00:00"})
+        """), {"username": "admin", "password": hashed_admin_password, "reg_date": "2000-01-01 00:00:00"})
         session.commit()
 
 
@@ -65,10 +66,10 @@ def add_user(username, password):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with conn.session as session:
-            session.execute("""
+            session.execute(text("""
                 INSERT INTO users (username, password, registration_date) 
                 VALUES (:username, :password, :reg_date)
-            """, {"username": username, "password": make_hashes(password), "reg_date": current_time})
+            """), {"username": username, "password": make_hashes(password), "reg_date": current_time})
             session.commit()
         return True
     except Exception:
@@ -93,46 +94,46 @@ def get_user_by_id(user_id):
 
 def update_user_password(user_id, new_password):
     with conn.session as session:
-        session.execute("UPDATE users SET password = :p WHERE id = :uid", 
+        session.execute(text("UPDATE users SET password = :p WHERE id = :uid"), 
                         {"p": make_hashes(new_password), "uid": user_id})
         session.commit()
 
 
 def add_book_to_db(user_id, title, category, image_bytes, image_name):
     with conn.session as session:
-        session.execute("""
+        session.execute(text("""
             INSERT INTO books (user_id, title, category, image_bytes, image_name)
             VALUES (:uid, :title, :category, :img, :img_name)
-        """, {"uid": user_id, "title": title, "category": category, "img": image_bytes, "img_name": image_name})
+        """), {"uid": user_id, "title": title, "category": category, "img": image_bytes, "img_name": image_name})
         session.commit()
 
 
 def update_book_in_db(book_id, user_id, title, category, image_bytes=None, image_name=None):
     with conn.session as session:
         if image_bytes:
-            session.execute("""
+            session.execute(text("""
                 UPDATE books 
                 SET title = :title, category = :category, image_bytes = :img, image_name = :img_name
                 WHERE id = :bid AND user_id = :uid
-            """, {"title": title, "category": category, "img": image_bytes, "img_name": image_name, "bid": book_id, "uid": user_id})
+            """), {"title": title, "category": category, "img": image_bytes, "img_name": image_name, "bid": book_id, "uid": user_id})
         else:
-            session.execute("""
+            session.execute(text("""
                 UPDATE books 
                 SET title = :title, category = :category
                 WHERE id = :bid AND user_id = :uid
-            """, {"title": title, "category": category, "bid": book_id, "uid": user_id})
+            """), {"title": title, "category": category, "bid": book_id, "uid": user_id})
         session.commit()
 
 
 def delete_book_from_db(book_id, user_id):
     with conn.session as session:
-        session.execute("DELETE FROM books WHERE id = :bid AND user_id = :uid", {"bid": book_id, "uid": user_id})
+        session.execute(text("DELETE FROM books WHERE id = :bid AND user_id = :uid"), {"bid": book_id, "uid": user_id})
         session.commit()
 
 
 def delete_all_books_from_db(user_id):
     with conn.session as session:
-        session.execute("DELETE FROM books WHERE user_id = :uid", {"uid": user_id})
+        session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": user_id})
         session.commit()
 
 
@@ -195,8 +196,8 @@ def admin_get_all_books():
 
 def admin_delete_user_and_library(target_user_id):
     with conn.session as session:
-        session.execute("DELETE FROM books WHERE user_id = :uid", {"uid": target_user_id})
-        session.execute("DELETE FROM users WHERE id = :uid", {"uid": target_user_id})
+        session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
+        session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
         session.commit()
 
 
