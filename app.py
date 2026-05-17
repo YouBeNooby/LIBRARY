@@ -96,17 +96,6 @@ def login_user(username, password):
     return None
 
 
-def get_user_by_id(user_id):
-    df = conn.query(
-        "SELECT id, username FROM users WHERE id = :id",
-        params={"id": user_id},
-        ttl=0
-    )
-    if not df.empty:
-        return (int(df.iloc[0]["id"]), df.iloc[0]["username"])
-    return None
-
-
 def update_user_password(user_id, new_password):
     with conn.session as session:
         session.execute(text("UPDATE users SET password = :p WHERE id = :id"), 
@@ -158,7 +147,6 @@ def load_books_from_db(user_id):
         params={"uid": user_id},
         ttl=0
     )
-    # Convert dataframe into a clean list of dictionaries for the gallery frontend
     return df.to_dict(orient="records")
 
 
@@ -204,18 +192,7 @@ def admin_delete_user_and_library(target_user_id):
 # Trigger initial table checks on cloud environment
 init_db()
 
-# --- NATIVE IMMUTABLE URL RECOVERY PARSER ---
-if "uid" in st.query_params:
-    try:
-        target_uid = int(st.query_params["uid"])
-        user_record = get_user_by_id(target_uid)
-        if user_record:
-            st.session_state.logged_in = True
-            st.session_state.user_id = user_record[0]
-            st.session_state.username = user_record[1]
-    except Exception:
-        pass
-
+# SECURE BASELINE STATE INITIALIZATION (Bypasses URL Parameter Hacks Completely)
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_id" not in st.session_state:
@@ -255,7 +232,8 @@ if not st.session_state.logged_in:
                     st.session_state.user_id = user_record[0]
                     st.session_state.username = user_record[1]
                     
-                    st.query_params["uid"] = str(user_record[0])
+                    # Clean the query parameters completely upon successful explicit validation
+                    st.query_params.clear()
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -381,7 +359,6 @@ if books_list:
                 st.caption(book["category"])
                 if book["image_bytes"]:
                     try:
-                        # Handles bytes data safely out of PostgreSQL BYTEA arrays
                         st.image(Image.open(io.BytesIO(bytes(book["image_bytes"]))), use_container_width=True)
                     except Exception:
                         st.caption("⚠️ [Image Display Error]")
