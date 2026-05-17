@@ -1,3 +1,5 @@
 streamlit
 pandas
 Pillow
+psycopg2-binary
+st-postgresql-connection
