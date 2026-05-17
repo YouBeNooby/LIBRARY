@@ -1,10 +1,10 @@
 import hashlib
 from datetime import datetime
+import sqlite3
 import pandas as pd
 import streamlit as st
 from PIL import Image
 import io
-from sqlalchemy import text  # Required for SQLAlchemy 2.0 execution compatibility
 
 # 1. Page Configuration
 st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
@@ -18,190 +18,187 @@ CATEGORIES = [
     "Wishlist"
 ]
 
-# 2. Establish Persistent Cloud Database Connection
-# This seamlessly hooks into the properties configured in your Streamlit secrets panel
-conn = st.connection("postgresql", type="sql")
+# 2. Local SQLite Core Initialization Functions
+def get_db_connection():
+    conn = sqlite3.connect("library.db", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-# 3. Core Database & Security Functions
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 
 def init_db():
-    # PostgreSQL architectural definitions: SERIAL handles autoincrement, BYTEA handles image binary objects
-    with conn.session as session:
-        session.execute(text("""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
                 registration_date TEXT NOT NULL
             )
-        """))
-        session.execute(text("""
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS books (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 category TEXT NOT NULL,
-                image_bytes BYTEA,
+                image_bytes BLOB,
                 image_name TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
-        """))
-        session.commit()
-
-        # Automatic admin account recovery insurance
+        """)
+        conn.commit()
+        
+        # Hardcoded Admin Account Insurance
         hashed_admin_password = make_hashes("LeBakri!!")
-        session.execute(text("""
-            INSERT INTO users (username, password, registration_date) 
-            VALUES (:username, :password, :reg_date)
-            ON CONFLICT (username) DO NOTHING
-        """), {"username": "admin", "password": hashed_admin_password, "reg_date": "2000-01-01 00:00:00"})
-        session.commit()
+        try:
+            cursor.execute("""
+                INSERT INTO users (username, password, registration_date) 
+                VALUES (?, ?, ?)
+            """, ("admin", hashed_admin_password, "2000-01-01 00:00:00"))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
 
 
 def add_user(username, password):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        with conn.session as session:
-            session.execute(text("""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
                 INSERT INTO users (username, password, registration_date) 
-                VALUES (:username, :password, :reg_date)
-            """), {"username": username, "password": make_hashes(password), "reg_date": current_time})
-            session.commit()
+                VALUES (?, ?, ?)
+            """, (username, make_hashes(password), current_time))
+            conn.commit()
         return True
-    except Exception:
-        # Gracefully flag false if user creation conflicts with unique username constraints
+    except sqlite3.IntegrityError:
         return False
 
 
 def login_user(username, password):
-    df = conn.query("SELECT id, username FROM users WHERE username = :u AND password = :p", 
-                    params={"u": username, "p": make_hashes(password)}, ttl=0)
-    if not df.empty:
-        return (int(df.iloc[0]["id"]), df.iloc[0]["username"])
-    return None
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, username FROM users WHERE username = ? AND password = ?", 
+                       (username, make_hashes(password)))
+        user = cursor.fetchone()
+        return (user["id"], user["username"]) if user else None
 
 
 def get_user_by_id(user_id):
-    df = conn.query("SELECT id, username FROM users WHERE id = :uid", params={"uid": user_id}, ttl=0)
-    if not df.empty:
-        return (int(df.iloc[0]["id"]), df.iloc[0]["username"])
-    return None
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, username FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        return (user["id"], user["username"]) if user else None
 
 
 def update_user_password(user_id, new_password):
-    with conn.session as session:
-        session.execute(text("UPDATE users SET password = :p WHERE id = :uid"), 
-                        {"p": make_hashes(new_password), "uid": user_id})
-        session.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET password = ? WHERE id = ?", (make_hashes(new_password), user_id))
+        conn.commit()
 
 
 def add_book_to_db(user_id, title, category, image_bytes, image_name):
-    with conn.session as session:
-        session.execute(text("""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
             INSERT INTO books (user_id, title, category, image_bytes, image_name)
-            VALUES (:uid, :title, :category, :img, :img_name)
-        """), {"uid": user_id, "title": title, "category": category, "img": image_bytes, "img_name": image_name})
-        session.commit()
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, title, category, image_bytes, image_name))
+        conn.commit()
 
 
 def update_book_in_db(book_id, user_id, title, category, image_bytes=None, image_name=None):
-    with conn.session as session:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
         if image_bytes:
-            session.execute(text("""
+            cursor.execute("""
                 UPDATE books 
-                SET title = :title, category = :category, image_bytes = :img, image_name = :img_name
-                WHERE id = :bid AND user_id = :uid
-            """), {"title": title, "category": category, "img": image_bytes, "img_name": image_name, "bid": book_id, "uid": user_id})
+                SET title = ?, category = ?, image_bytes = ?, image_name = ?
+                WHERE id = ? AND user_id = ?
+            """, (title, category, image_bytes, image_name, book_id, user_id))
         else:
-            session.execute(text("""
+            cursor.execute("""
                 UPDATE books 
-                SET title = :title, category = :category
-                WHERE id = :bid AND user_id = :uid
-            """), {"title": title, "category": category, "bid": book_id, "uid": user_id})
-        session.commit()
+                SET title = ?, category = ?
+                WHERE id = ? AND user_id = ?
+            """, (title, category, book_id, user_id))
+        conn.commit()
 
 
 def delete_book_from_db(book_id, user_id):
-    with conn.session as session:
-        session.execute(text("DELETE FROM books WHERE id = :bid AND user_id = :uid"), {"bid": book_id, "uid": user_id})
-        session.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM books WHERE id = ? AND user_id = ?", (book_id, user_id))
+        conn.commit()
 
 
 def delete_all_books_from_db(user_id):
-    with conn.session as session:
-        session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": user_id})
-        session.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM books WHERE user_id = ?", (user_id,))
+        conn.commit()
 
 
 def load_books_from_db(user_id):
-    df = conn.query("SELECT id, title, category, image_bytes, image_name FROM books WHERE user_id = :uid ORDER BY id ASC", 
-                    params={"uid": user_id}, ttl=0)
-    if df.empty:
-        return []
-    
-    # Process PostgreSQL BYTEA streaming datatypes securely into uniform Python byte arrays
-    books = []
-    for _, row in df.iterrows():
-        img_data = row["image_bytes"]
-        if img_data and isinstance(img_data, memoryview):
-            img_data = img_data.tobytes()
-        elif img_data and isinstance(img_data, str):
-            img_data = bytes.fromhex(img_data.replace('\\x', ''))
-            
-        books.append({
-            "id": int(row["id"]), 
-            "title": str(row["title"]), 
-            "category": str(row["category"]), 
-            "image_bytes": img_data, 
-            "image_name": row["image_name"]
-        })
-    return books
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title, category, image_bytes, image_name FROM books WHERE user_id = ? ORDER BY id ASC", (user_id,))
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 # --- ADMIN PIPELINE FUNCTIONS ---
 def admin_get_all_users_metrics():
-    query = """
-        SELECT 
-            (ROW_NUMBER() OVER (ORDER BY users.registration_date ASC))::integer AS "User No.",
-            users.id AS db_id, 
-            users.username AS "Username", 
-            COUNT(books.id)::integer AS "Books Tracked"
-        FROM users
-        LEFT JOIN books ON users.id = books.user_id
-        GROUP BY users.id, users.username, users.registration_date
-        ORDER BY users.registration_date ASC
-    """
-    df = conn.query(query, ttl=0)
-    return df.to_dict(orient="records") if not df.empty else []
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT 
+                (ROW_NUMBER() OVER (ORDER BY users.registration_date ASC)) AS "User No.",
+                users.id AS db_id, 
+                users.username AS "Username", 
+                COUNT(books.id) AS "Books Tracked"
+            FROM users
+            LEFT JOIN books ON users.id = books.user_id
+            GROUP BY users.id
+            ORDER BY users.registration_date ASC
+        """
+        cursor.execute(query)
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def admin_get_all_books():
-    query = """
-        SELECT 
-            (ROW_NUMBER() OVER (ORDER BY books.id ASC))::integer AS "Book No.",
-            users.username AS "Owner", 
-            books.title AS "Title", 
-            books.category AS "Category"
-        FROM books
-        JOIN users ON books.user_id = users.id
-        ORDER BY books.id ASC
-    """
-    df = conn.query(query, ttl=0)
-    return df.to_dict(orient="records") if not df.empty else []
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT 
+                (ROW_NUMBER() OVER (ORDER BY books.id ASC)) AS "Book No.",
+                users.username AS "Owner", 
+                books.title AS "Title", 
+                books.category AS "Category"
+            FROM books
+            JOIN users ON books.user_id = users.id
+            ORDER BY books.id ASC
+        """
+        cursor.execute(query)
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def admin_delete_user_and_library(target_user_id):
-    with conn.session as session:
-        session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
-        session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
-        session.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM books WHERE user_id = ?", (target_user_id,))
+        cursor.execute("DELETE FROM users WHERE id = ?", (target_user_id,))
+        conn.commit()
 
 
-# Initialize Database Architecture on Supabase Node
+# Initialize Local SQLite Engine Environment
 init_db()
 
 # --- NATIVE IMMUTABLE URL RECOVERY PARSER ---
