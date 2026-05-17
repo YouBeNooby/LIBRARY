@@ -19,7 +19,7 @@ CATEGORIES = [
 ]
 
 # 2. Establish Persistent Cloud Database Connection
-# This grabs the configuration parameters directly from your Streamlit secrets environment
+# This seamlessly hooks into the properties configured in your Streamlit secrets panel
 conn = st.connection("postgresql", type="sql")
 
 
