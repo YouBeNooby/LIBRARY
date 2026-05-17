@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 import io
+import secrets
 from sqlalchemy import text
 
 # 1. Page Configuration
@@ -50,12 +51,21 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """))
+        # Create user sessions table (For non-URL persistent tracking)
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """))
         session.commit()
         
         # Hardcoded Admin Account Insurance
         hashed_admin_password = make_hashes("LeBakri!!18")
         try:
-            # Check if admin already exists
             res = session.execute(text("SELECT id FROM users WHERE username = 'admin'")).fetchone()
             if not res:
                 session.execute(text("""
@@ -64,7 +74,6 @@ def init_db():
                 """), {"u": "admin", "p": hashed_admin_password, "r": "2000-01-01 00:00:00"})
                 session.commit()
             else:
-                # Force updates to the password in case it was modified
                 session.execute(text("UPDATE users SET password = :p WHERE username = 'admin'"), {"p": hashed_admin_password})
                 session.commit()
         except Exception:
@@ -186,13 +195,14 @@ def admin_delete_user_and_library(target_user_id):
     with conn.session as session:
         session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
         session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
+        session.execute(text("DELETE FROM user_sessions WHERE user_id = :uid"), {"uid": target_user_id})
         session.commit()
 
 
 # Trigger initial table checks on cloud environment
 init_db()
 
-# SECURE BASELINE STATE INITIALIZATION (Bypasses URL Parameter Hacks Completely)
+# Baseline safe initialization of session states
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_id" not in st.session_state:
@@ -201,6 +211,21 @@ if "username" not in st.session_state:
     st.session_state.username = None
 if "editing_book_id" not in st.session_state:
     st.session_state.editing_book_id = None
+if "session_token" not in st.session_state:
+    st.session_state.session_token = None
+
+# NON-URL AUTOMATED SESSION VERIFIER
+# If the user has an active memory token from keeping the app open/awake
+if st.session_state.session_token and not st.session_state.logged_in:
+    token_check = conn.query(
+        "SELECT user_id, username FROM user_sessions WHERE token = :t",
+        params={"t": st.session_state.session_token},
+        ttl=0
+    )
+    if not token_check.empty:
+        st.session_state.logged_in = True
+        st.session_state.user_id = int(token_check.iloc[0]["user_id"])
+        st.session_state.username = token_check.iloc[0]["username"]
 
 
 # 4. Authentication UI Workflow
@@ -213,6 +238,12 @@ if not st.session_state.logged_in:
     with st.form("auth_form"):
         username = st.text_input("Username", key=f"user_{auth_mode}").strip()
         password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
+        
+        # Checkbox matches logic behavior: only displays during active user logins
+        remember_me = False
+        if auth_mode == "Login":
+            remember_me = st.checkbox("Keep me logged in", key="remember_Login")
+            
         submit_auth = st.form_submit_button(auth_mode)
         
         if submit_auth:
@@ -232,7 +263,17 @@ if not st.session_state.logged_in:
                     st.session_state.user_id = user_record[0]
                     st.session_state.username = user_record[1]
                     
-                    # Clean the query parameters completely upon successful explicit validation
+                    if remember_me:
+                        secure_token = secrets.token_urlsafe(32)
+                        current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        with conn.session as session:
+                            session.execute(text("""
+                                INSERT INTO user_sessions (token, user_id, username, created_at)
+                                VALUES (:t, :uid, :u, :c)
+                            """), {"t": secure_token, "uid": user_record[0], "u": user_record[1], "c": current_timestamp})
+                            session.commit()
+                        st.session_state.session_token = secure_token
+                    
                     st.query_params.clear()
                     st.rerun()
                 else:
@@ -251,10 +292,17 @@ st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*
 with st.sidebar:
     st.header("Control Panel")
     if st.button("Log Out", type="primary", use_container_width=True):
+        # Purge token database tracking on explicit manual disconnect requests
+        if st.session_state.session_token:
+            with conn.session as session:
+                session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": st.session_state.session_token})
+                session.commit()
+                
         st.session_state.logged_in = False
         st.session_state.user_id = None
         st.session_state.username = None
         st.session_state.editing_book_id = None
+        st.session_state.session_token = None
         st.query_params.clear()
         st.rerun()
         
