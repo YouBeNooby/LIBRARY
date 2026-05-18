@@ -218,11 +218,9 @@ cookie_manager = stx.CookieManager()
 
 # BROWSER COOKIE AUTO-LOGIN VERIFIER
 if not st.session_state.logged_in:
-    # Read cookie directly from user's hard drive
     cookie_token = cookie_manager.get(cookie="book_library_token")
     
     if cookie_token:
-        # Check if cookie token exists in our secure database session registry
         token_check = conn.query(
             "SELECT user_id, username FROM user_sessions WHERE token = :t",
             params={"t": cookie_token},
@@ -245,7 +243,6 @@ if not st.session_state.logged_in:
         username = st.text_input("Username", key=f"user_{auth_mode}").strip()
         password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
         
-        # Display checkbox only during an active login attempt
         remember_me = False
         if auth_mode == "Login":
             remember_me = st.checkbox("Keep me logged in", key="remember_Login")
@@ -273,7 +270,6 @@ if not st.session_state.logged_in:
                         secure_token = secrets.token_urlsafe(32)
                         current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # Store session validation key on Supabase
                         with conn.session as session:
                             session.execute(text("""
                                 INSERT INTO user_sessions (token, user_id, username, created_at)
@@ -281,7 +277,6 @@ if not st.session_state.logged_in:
                             """), {"t": secure_token, "uid": user_record[0], "u": user_record[1], "c": current_timestamp})
                             session.commit()
                             
-                        # Set a persistent browser cookie that expires in 30 days
                         cookie_manager.set(
                             cookie="book_library_token",
                             val=secure_token,
@@ -306,13 +301,11 @@ st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*
 with st.sidebar:
     st.header("Control Panel")
     if st.button("Log Out", type="primary", use_container_width=True):
-        # Fetch the active cookie token to clear tracking
         active_cookie = cookie_manager.get(cookie="book_library_token")
         if active_cookie:
             with conn.session as session:
                 session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": active_cookie})
                 session.commit()
-            # Explicitly delete the cookie file off the client's hard drive
             cookie_manager.delete(cookie="book_library_token")
                 
         st.session_state.logged_in = False
@@ -322,21 +315,29 @@ with st.sidebar:
         st.query_params.clear()
         st.rerun()
         
+    # -------- UPDATED SECURE PASSWORD CHANGING SYSTEM -------- #
     with st.expander("👤 Account Security"):
         st.subheader("Change Password")
         with st.form("change_password_form", clear_on_submit=True):
+            current_password = st.text_input("Current Password", type="password")
             new_password = st.text_input("New Password", type="password")
             confirm_password = st.text_input("Confirm New Password", type="password")
             submit_change = st.form_submit_button("Update Password", use_container_width=True)
             
             if submit_change:
-                if not new_password or not confirm_password:
-                    st.error("Password fields cannot be blank.")
+                if not current_password or not new_password or not confirm_password:
+                    st.error("All password fields are required.")
                 elif new_password != confirm_password:
-                    st.error("Passwords do not match.")
+                    st.error("New passwords do not match.")
                 else:
-                    update_user_password(st.session_state.user_id, new_password)
-                    st.success("Password updated successfully!")
+                    # Query Supabase to check the actual stored hash for verification
+                    user_data_df = conn.query("SELECT password FROM users WHERE id=:id", params={"id": st.session_state.user_id}, ttl=0)
+                    
+                    if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
+                        update_user_password(st.session_state.user_id, new_password)
+                        st.success("Password changed successfully!")
+                    else:
+                        st.error("Incorrect current password.")
         
     st.divider()
     st.header("Add a Book")
