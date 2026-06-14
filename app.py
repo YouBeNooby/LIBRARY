@@ -151,13 +151,14 @@ def delete_all_books_from_db(user_id):
         session.commit()
 
 
+# FIXED: Bypasses Streamlit's internal cache framework to eliminate data serialization crashes
 def load_books_from_db(user_id):
-    df = conn.query(
-        "SELECT id, title, category, image_bytes, image_name FROM books WHERE user_id = :uid ORDER BY id ASC",
-        params={"uid": user_id},
-        ttl=0
-    )
-    return df.to_dict(orient="records")
+    with conn.session as session:
+        result = session.execute(
+            text("SELECT id, title, category, image_bytes, image_name FROM books WHERE user_id = :uid ORDER BY id ASC"),
+            {"uid": user_id}
+        )
+        return [dict(row) for row in result.mappings()]
 
 
 # --- ADMIN PIPELINE FUNCTIONS ---
@@ -315,7 +316,7 @@ with st.sidebar:
         st.query_params.clear()
         st.rerun()
         
-    # -------- UPDATED SECURE PASSWORD CHANGING SYSTEM -------- #
+    # SECURE PASSWORD CHANGING SYSTEM (WITH PASSCODE VERIFICATION)
     with st.expander("👤 Account Security"):
         st.subheader("Change Password")
         with st.form("change_password_form", clear_on_submit=True):
@@ -330,7 +331,6 @@ with st.sidebar:
                 elif new_password != confirm_password:
                     st.error("New passwords do not match.")
                 else:
-                    # Query Supabase to check the actual stored hash for verification
                     user_data_df = conn.query("SELECT password FROM users WHERE id=:id", params={"id": st.session_state.user_id}, ttl=0)
                     
                     if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
