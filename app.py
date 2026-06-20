@@ -273,17 +273,16 @@ def admin_get_all_books():
 
 def admin_delete_user_and_library(target_user_id):
     with conn.session as session:
-        # 1. Delete associated memberships first
+        # 1. Delete links to library memberships first (this is the most likely culprit)
         session.execute(text("DELETE FROM library_memberships WHERE user_id = :uid"), {"uid": target_user_id})
         
-        # 2. Delete associated books
+        # 2. Delete the user's books
         session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
         
         # 3. NOW delete the user
         session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
         
         session.commit()
-
 
 # Trigger initial table checks on cloud environment
 init_db()
