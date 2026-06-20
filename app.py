@@ -18,7 +18,7 @@ if "user_id" not in st.session_state:
 if "editing_book_id" not in st.session_state:
     st.session_state.editing_book_id = None
 if "library_config" not in st.session_state:
-    st.session_state.library_config = None  # Dict mapping tracking: {"name": ..., "access_code": ...}
+    st.session_state.library_config = None  # Dict layout format mapping tracking parameters
 
 # 2. Establish Persistent Cloud Database Connection
 conn = st.connection("postgresql", type="sql")
@@ -29,7 +29,7 @@ cookie_manager = stx.CookieManager()
 # ACTIVE KICK-OUT TRANS-GUARD SYSTEM
 if st.session_state.logged_in and st.session_state.library_config is not None:
     active_code = st.session_state.library_config.get("access_code")
-    check_active_df = conn.query("SELECT library_name FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
+    check_active_df = conn.query("SELECT library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
     if check_active_df.empty:
         st.session_state.library_config = None
         try:
@@ -37,6 +37,11 @@ if st.session_state.logged_in and st.session_state.library_config is not None:
         except Exception:
             pass
         st.warning("⚠️ The active session configuration access code was deleted by an administrator.")
+    else:
+        # Keep background data objects updated natively on runtimes
+        st.session_state.library_config["name"] = check_active_df.iloc[0]["library_name"]
+        st.session_state.library_config["type"] = check_active_df.iloc[0]["library_type"]
+        st.session_state.library_config["max_accounts"] = int(check_active_df.iloc[0]["max_accounts"])
 
 # 3. Dynamic Page Layout Title Mapping Construction Engine
 dynamic_title = "Book Library"
@@ -97,13 +102,27 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """))
-        # Completely configurable access code mapping table
+        # Completely configurable access code mapping table with seat configuration data objects
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS library_configurations (
                 id SERIAL PRIMARY KEY,
                 library_name TEXT NOT NULL,
                 access_code TEXT UNIQUE NOT NULL,
+                library_type TEXT NOT NULL DEFAULT 'Singular',
+                max_accounts INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
+            )
+        """))
+        # Member seat assignment map tracking table configuration
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS library_memberships (
+                id SERIAL PRIMARY KEY,
+                config_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                joined_at TEXT NOT NULL,
+                UNIQUE (config_id, user_id),
+                FOREIGN KEY (config_id) REFERENCES library_configurations(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """))
         session.commit()
@@ -272,11 +291,13 @@ if not st.session_state.logged_in:
 if st.session_state.logged_in and st.session_state.library_config is None:
     saved_code = cookie_manager.get(cookie="library_access_code")
     if saved_code:
-        match_df = conn.query("SELECT library_name FROM library_configurations WHERE access_code=:ac", params={"ac": saved_code}, ttl=0)
+        match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": saved_code}, ttl=0)
         if not match_df.empty:
             st.session_state.library_config = {
                 "name": match_df.iloc[0]["library_name"],
-                "access_code": saved_code
+                "access_code": saved_code,
+                "type": match_df.iloc[0]["library_type"],
+                "max_accounts": int(match_df.iloc[0]["max_accounts"])
             }
 
 # 4. Authentication UI Workflow
@@ -346,7 +367,7 @@ with st.sidebar:
     st.success(f"User: **{st.session_state.username}**" + (" *(Admin)*" if is_admin else ""))
     
     if st.session_state.library_config is not None:
-        st.info(f"📋 Scope: `{st.session_state.library_config['name']}`")
+        st.info(f"📋 Scope: `{st.session_state.library_config['name']}` ({st.session_state.library_config['type']})")
         if st.button("🔄 Change Access Code", use_container_width=True):
             st.session_state.library_config = None
             try:
@@ -412,6 +433,11 @@ if is_admin:
         with st.form("admin_deploy_config_form", clear_on_submit=True):
             lib_name_input = st.text_input("Configurable System / Library Name", placeholder="e.g., User's Library, Book Club Library").strip()
             lib_code_input = st.text_input("Unique Entry Access Code Key").strip()
+            
+            # ADMIN ALLOCATION SCALE PICKER INTERFACE COMPONENTS
+            lib_type_input = st.radio("Operational Allocation Mapping Rules Profile Set", ["Singular", "Team"], horizontal=True)
+            max_seats_input = st.number_input("Maximum Allowed Team Members Accounts (Ignored in Singular Mode)", min_value=1, max_value=250, value=5)
+            
             submit_config = st.form_submit_button("Deploy Library Scope Configuration")
             
             if submit_config:
@@ -420,29 +446,37 @@ if is_admin:
                 else:
                     try:
                         current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        resolved_seats = 1 if lib_type_input == "Singular" else int(max_seats_input)
+                        
                         with conn.session as session:
                             session.execute(text("""
-                                INSERT INTO library_configurations (library_name, access_code, created_at)
-                                VALUES (:n, :c, :cat)
-                            """), {"n": lib_name_input, "c": lib_code_input, "cat": current_ts})
+                                INSERT INTO library_configurations (library_name, access_code, library_type, max_accounts, created_at)
+                                VALUES (:n, :c, :lt, :ma, :cat)
+                            """), {"n": lib_name_input, "c": lib_code_input, "lt": lib_type_input, "ma": resolved_seats, "cat": current_ts})
                             session.commit()
-                        st.success(f"Configuration set deployed! Code Key '{lib_code_input}' maps to storage target layout rules for '{lib_name_input}'.")
+                        st.success(f"Configuration deployed! '{lib_code_input}' sets a `{lib_type_input}` storage setup (Max accounts: {resolved_seats}) for '{lib_name_input}'.")
                         st.rerun()
                     except Exception:
                         st.error("Failed to deploy layout rules. Verify this code isn't a duplicate registry item.")
                         
     with admin_tab2:
         st.subheader("Active System Access Codes Registry")
-        all_configs_df = conn.query("SELECT id, library_name, access_code, created_at FROM library_configurations ORDER BY id DESC", ttl=0)
+        all_configs_df = conn.query("SELECT id, library_name, access_code, library_type, max_accounts FROM library_configurations ORDER BY id DESC", ttl=0)
         if not all_configs_df.empty:
             for _, cfg_row in all_configs_df.iterrows():
                 cfg_id = int(cfg_row["id"])
                 cfg_name = cfg_row["library_name"]
                 cfg_code = cfg_row["access_code"]
+                cfg_type = cfg_row["library_type"]
+                cfg_max = int(cfg_row["max_accounts"])
+                
+                # Dynamic intake registration counts metrics logs aggregation
+                member_metrics_df = conn.query("SELECT COUNT(*) as count FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
+                occupied_seats = member_metrics_df.iloc[0]["count"]
                 
                 c_col1, c_col2 = st.columns([3, 1])
                 with c_col1:
-                    st.markdown(f"🔹 Code Key: **{cfg_code}** | Target Configuration Scope Name: `{cfg_name}`")
+                    st.markdown(f"🔹 Code Key: **{cfg_code}** | Target: `{cfg_name}` | Profile Type: `{cfg_type}` | Active Seat Allocations: `{occupied_seats} / {cfg_max}`")
                 with c_col2:
                     if st.button("Delete Configuration Code", key=f"del_code_{cfg_id}", type="secondary", use_container_width=True):
                         with conn.session as session:
@@ -498,7 +532,7 @@ if is_admin:
             st.info("No books recorded platform-wide.")
     st.divider()
 
-# -------- GATEWAY RULE VERIFICATION CHALLENGE DECK -------- #
+# -------- GATEWAY OCCUPANCY THRESHOLD VERIFICATION CODES DECK -------- #
 if st.session_state.library_config is None:
     st.subheader("🔒 Target Access Verification Required")
     st.info("Please enter your venue configuration access code to open your layout tracking panels.")
@@ -509,21 +543,55 @@ if st.session_state.library_config is None:
         submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
         if submit_gate:
-            match_df = conn.query("SELECT library_name FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+            match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
             if not match_df.empty:
-                st.session_state.library_config = {
-                    "name": match_df.iloc[0]["library_name"],
-                    "access_code": entered_code
-                }
+                cfg_id = int(match_df.iloc[0]["id"])
+                cfg_name = match_df.iloc[0]["library_name"]
+                cfg_type = match_df.iloc[0]["library_type"]
+                cfg_max = int(match_df.iloc[0]["max_accounts"])
                 
-                if remember_code:
-                    cookie_manager.set(
-                        cookie="library_access_code",
-                        val=entered_code,
-                        expires_at=datetime.now() + pd.Timedelta(days=30)
-                    )
-                st.success(f"Access granted! Opening dynamic panel rules mapping parameters for: **{st.session_state.library_config['name']}**")
-                st.rerun()
+                # Query historical database registries tracking occupied allocations
+                membership_log_df = conn.query("SELECT user_id FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
+                registered_member_ids = membership_log_df["user_id"].tolist() if not membership_log_df.empty else []
+                
+                # Check validation boundaries logic metrics mapping
+                grant_token_entry = False
+                if st.session_state.user_id in registered_member_ids or is_admin:
+                    grant_token_entry = True
+                else:
+                    # Account claiming a completely new registration seat slot space
+                    if len(registered_member_ids) >= cfg_max:
+                        if cfg_type == "Singular":
+                            st.error("❌ Access Claim Refused. This singular library space has already been activated and claimed by another user account profile.")
+                        else:
+                            st.error(f"❌ Access Claim Refused. This Team tracking container has reached its registration account limit cap ({cfg_max}/{cfg_max}).")
+                    else:
+                        # Register the user seat choice transaction natively inside database storage logs
+                        grant_token_entry = True
+                        current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        with conn.session as session:
+                            session.execute(text("""
+                                INSERT INTO library_memberships (config_id, user_id, joined_at)
+                                VALUES (:cid, :uid, :jat)
+                            """), {"cid": cfg_id, "uid": st.session_state.user_id, "jat": current_ts})
+                            session.commit()
+                
+                if grant_token_entry:
+                    st.session_state.library_config = {
+                        "name": cfg_name,
+                        "access_code": entered_code,
+                        "type": cfg_type,
+                        "max_accounts": cfg_max
+                    }
+                    
+                    if remember_code:
+                        cookie_manager.set(
+                            cookie="library_access_code",
+                            val=entered_code,
+                            expires_at=datetime.now() + pd.Timedelta(days=30)
+                        )
+                    st.success(f"Access granted! Opening parameters for: **{st.session_state.library_config['name']}**")
+                    st.rerun()
             else:
                 st.error("Invalid configuration key parameters. Please contact your system administrator.")
     st.stop()
@@ -533,7 +601,7 @@ books_list = load_books_from_db(st.session_state.user_id)
 
 st.header(f"{dynamic_icon} Workspace: {st.session_state.library_config['name']}")
 
-# Dynamic layout components loading tracking boundaries
+# Dynamic sidebar actions mapping context parameters allocation rules
 with st.sidebar:
     st.divider()
     st.header("Add a Book")
