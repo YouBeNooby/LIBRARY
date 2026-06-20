@@ -182,6 +182,12 @@ def delete_book_from_db(book_id, user_id):
         session.commit()
 
 
+def admin_global_delete_book(book_id):
+    with conn.session as session:
+        session.execute(text("DELETE FROM books WHERE id = :bid"), {"bid": book_id})
+        session.commit()
+
+
 def delete_all_books_from_db(user_id):
     with conn.session as session:
         session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": user_id})
@@ -217,7 +223,7 @@ def admin_get_all_users_metrics():
 def admin_get_all_books():
     query = """
         SELECT 
-            (ROW_NUMBER() OVER (ORDER BY books.id ASC)) AS "Book No.",
+            books.id AS book_id,
             users.username AS "Owner", 
             books.title AS "Title", 
             books.category AS "Category"
@@ -421,7 +427,7 @@ if is_admin:
                         st.success(f"Configuration template mapping rule '{cfg_code}' deleted.")
                         st.rerun()
         else:
-            st.info("No customizable configuration setup mappings provisioned yet.")
+            st.info("No customized setup mappings provisioned yet.")
             
     with admin_tab3:
         st.subheader("System Users Overview")
@@ -450,7 +456,20 @@ if is_admin:
         st.subheader("Global Library Master Logs")
         all_books = admin_get_all_books()
         if all_books:
-            st.dataframe(pd.DataFrame(all_books), use_container_width=True, hide_index=True)
+            for book_row in all_books:
+                b_id = book_row["book_id"]
+                b_owner = book_row["Owner"]
+                b_title = book_row["Title"]
+                b_cat = book_row["Category"]
+                
+                b_col1, b_col2 = st.columns([3, 1])
+                with b_col1:
+                    st.markdown(f"📖 **{b_title}** | Category: `{b_cat}` | Owner: `{b_owner}`")
+                with b_col2:
+                    if st.button("Purge From Library", key=f"admin_purge_bk_{b_id}", type="secondary", use_container_width=True):
+                        admin_global_delete_book(b_id)
+                        st.success(f"Successfully removed '{b_title}' platform-wide.")
+                        st.rerun()
         else:
             st.info("No books recorded platform-wide.")
     st.divider()
