@@ -273,16 +273,25 @@ def admin_get_all_books():
 
 def admin_delete_user_and_library(target_user_id):
     with conn.session as session:
-        # 1. Delete links to library memberships first (this is the most likely culprit)
-        session.execute(text("DELETE FROM library_memberships WHERE user_id = :uid"), {"uid": target_user_id})
-        
-        # 2. Delete the user's books
-        session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
-        
-        # 3. NOW delete the user
-        session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
-        
-        session.commit()
+        try:
+            # 1. Delete from child tables FIRST (the order matters)
+            session.execute(text("DELETE FROM user_sessions WHERE user_id = :uid"), {"uid": target_user_id})
+            session.execute(text("DELETE FROM library_memberships WHERE user_id = :uid"), {"uid": target_user_id})
+            session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
+            
+            # Assuming 'court_config' has a user_id column
+            session.execute(text("DELETE FROM court_config WHERE user_id = :uid"), {"uid": target_user_id})
+            
+            # 2. Finally, delete the user
+            session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
+            
+            session.commit()
+            st.success("User and all associated data successfully deleted.")
+            
+        except Exception as e:
+            session.rollback()
+            st.error(f"Failed to delete user: {e}")
+            # This will print the exact table/constraint error if one remains
 
 # Trigger initial table checks on cloud environment
 init_db()
