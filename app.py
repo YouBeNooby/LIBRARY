@@ -548,7 +548,7 @@ if st.session_state.library_config is None:
         submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
         if submit_gate:
-            match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac"), params={"ac": entered_code}, ttl=0
+            match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
             if not match_df.empty:
                 cfg_id = int(match_df.iloc[0]["id"])
                 cfg_name = match_df.iloc[0]["library_name"]
