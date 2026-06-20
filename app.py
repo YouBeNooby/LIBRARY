@@ -551,6 +551,7 @@ if st.session_state.library_config is None:
         submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
         if submit_gate:
+            is_first_member = False
             match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
             if not match_df.empty:
                 cfg_id = int(match_df.iloc[0]["id"])
@@ -565,7 +566,7 @@ if st.session_state.library_config is None:
                 st.write(f"DEBUG: Checking registrations for Config ID: {cfg_id}")
                 st.write(f"DEBUG: Current User ID: {st.session_state.user_id}")
                 st.write(f"DEBUG: Registered IDs: {registered_member_ids}")
-                
+
                 # Check validation boundaries logic metrics mapping
                 grant_token_entry = False
                 if st.session_state.user_id in registered_member_ids or is_admin:
