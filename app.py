@@ -724,6 +724,6 @@ if books_list:
                           if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
                              delete_book_from_db(book["id"], st.session_state.user_id)
                              st.success(f"Deleted '{book['title']}'")
-                              st.rerun()
+                             st.rerun()
 else:
     st.write("Upload some books to display them here.")
