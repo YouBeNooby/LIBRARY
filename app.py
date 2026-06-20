@@ -589,22 +589,22 @@ else:
                             })
                             session.commit()
                 
-                 if grant_token_entry:
-                    st.session_state.library_config = {
-                        "name": cfg_name,
-                        "access_code": entered_code,
-                        "type": cfg_type,
-                        "max_accounts": cfg_max
-                    }
-                    
-                    if remember_code:
-                        cookie_manager.set(
-                            cookie="library_access_code",
-                            val=entered_code,
-                            expires_at=datetime.now() + pd.Timedelta(days=30)
-                        )
-                    st.success(f"Access granted! Welcome, {'Team Leader' if is_first_member else 'Member'}.")
-                    st.rerun()
+                             if grant_token_entry:
+                                 st.session_state.library_config = {
+                                     "name": cfg_name,
+                                     "access_code": entered_code,
+                                     "type": cfg_type,
+                                    "max_accounts": cfg_max
+                                 }
+                     
+                             if remember_code:
+                                 cookie_manager.set(
+                                     cookie="library_access_code",
+                                     val=entered_code,
+                                     expires_at=datetime.now() + pd.Timedelta(days=30)
+                                 )
+                             st.success(f"Access granted! Welcome, {'Team Leader' if is_first_member else 'Member'}.")
+                             st.rerun()
             else:
                 st.error("Invalid configuration key parameters.")
     st.stop()
