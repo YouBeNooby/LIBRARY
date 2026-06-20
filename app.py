@@ -8,8 +8,41 @@ import secrets
 from sqlalchemy import text
 import extra_streamlit_components as stx
 
-# 1. Page Configuration
-st.set_page_config(page_title="Book Library", page_icon="📚", layout="wide")
+# --- BASELINE INITIALIZATION & PARAMETERS ISOLATION INTERCEPTIONS ---
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = None
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+if "editing_book_id" not in st.session_state:
+    st.session_state.editing_book_id = None
+if "library_config" not in st.session_state:
+    st.session_state.library_config = None  # Dict mapping tracking: {"name": ..., "access_code": ...}
+
+# 2. Establish Persistent Cloud Database Connection
+conn = st.connection("postgresql", type="sql")
+
+# ACTIVE KICK-OUT TRANS-GUARD SYSTEM
+if st.session_state.logged_in and st.session_state.library_config is not None:
+    active_code = st.session_state.library_config.get("access_code")
+    check_active_df = conn.query("SELECT library_name FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
+    if check_active_df.empty:
+        st.session_state.library_config = None
+        st.warning("⚠️ The active session configuration access code was deleted by an administrator.")
+
+# 3. Dynamic Page Layout Title Mapping Construction Engine
+dynamic_title = "Book Library"
+dynamic_icon = "📚"
+
+if st.session_state.library_config is not None:
+    dynamic_title = f"{st.session_state.library_config['name']} Tracker"
+    dynamic_icon = "📖"
+elif st.session_state.username == "admin":
+    dynamic_title = "Admin Library Panel"
+    dynamic_icon = "👑"
+
+st.set_page_config(page_title=dynamic_title, page_icon=dynamic_icon, layout="wide")
 
 CATEGORIES = [
     "Read pending",
@@ -20,15 +53,10 @@ CATEGORIES = [
     "Wishlist"
 ]
 
-# 2. Establish Persistent Cloud Database Connection
-conn = st.connection("postgresql", type="sql")
-
-
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-
-# 3. Initialize Tables on Supabase
+# Initialize Tables on Supabase
 def init_db():
     with conn.session as session:
         # Create users table
@@ -60,6 +88,15 @@ def init_db():
                 username TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """))
+        # Completely configurable access code mapping table
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS library_configurations (
+                id SERIAL PRIMARY KEY,
+                library_name TEXT NOT NULL,
+                access_code TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL
             )
         """))
         session.commit()
@@ -151,7 +188,6 @@ def delete_all_books_from_db(user_id):
         session.commit()
 
 
-# FIXED: Bypasses Streamlit's internal cache framework to eliminate data serialization crashes
 def load_books_from_db(user_id):
     with conn.session as session:
         result = session.execute(
@@ -204,16 +240,6 @@ def admin_delete_user_and_library(target_user_id):
 # Trigger initial table checks on cloud environment
 init_db()
 
-# Baseline safe initialization of session states
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "user_id" not in st.session_state:
-    st.session_state.user_id = None
-if "username" not in st.session_state:
-    st.session_state.username = None
-if "editing_book_id" not in st.session_state:
-    st.session_state.editing_book_id = None
-
 # Initialize Cookie Manager
 cookie_manager = stx.CookieManager()
 
@@ -231,7 +257,6 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.user_id = int(token_check.iloc[0]["user_id"])
             st.session_state.username = token_check.iloc[0]["username"]
-
 
 # 4. Authentication UI Workflow
 if not st.session_state.logged_in:
@@ -271,6 +296,7 @@ if not st.session_state.logged_in:
                         secure_token = secrets.token_urlsafe(32)
                         current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
+                        # Write mapping to database
                         with conn.session as session:
                             session.execute(text("""
                                 INSERT INTO user_sessions (token, user_id, username, created_at)
@@ -290,17 +316,20 @@ if not st.session_state.logged_in:
                     st.error("Invalid username or password.")
     st.stop()
 
-
-# 5. Main App Interface (Accessible only when logged in)
+# --- AUTHENTICATED SYSTEM LAYOUT BOUNDARIES ---
 is_admin = st.session_state.username.lower() == "admin"
-books_list = load_books_from_db(st.session_state.user_id)
 
-st.title("📚 Book Library")
-st.write(f"Logged in as: **{st.session_state.username}**" + (" *(Administrator)*" if is_admin else ""))
-
-# Sidebar Panels
+# ---------------- DEDICATED MANAGEMENT DECK SIDEBAR ---------------- #
 with st.sidebar:
     st.header("Control Panel")
+    st.success(f"User: **{st.session_state.username}**" + (" *(Admin)*" if is_admin else ""))
+    
+    if st.session_state.library_config is not None:
+        st.info(f"📋 Scope: `{st.session_state.library_config['name']}`")
+        if st.button("🔄 Change Access Code", use_container_width=True):
+            st.session_state.library_config = None
+            st.rerun()
+            
     if st.button("Log Out", type="primary", use_container_width=True):
         active_cookie = cookie_manager.get(cookie="book_library_token")
         if active_cookie:
@@ -312,11 +341,11 @@ with st.sidebar:
         st.session_state.logged_in = False
         st.session_state.user_id = None
         st.session_state.username = None
+        st.session_state.library_config = None
         st.session_state.editing_book_id = None
         st.query_params.clear()
         st.rerun()
         
-    # SECURE PASSWORD CHANGING SYSTEM (WITH PASSCODE VERIFICATION)
     with st.expander("👤 Account Security"):
         st.subheader("Change Password")
         with st.form("change_password_form", clear_on_submit=True):
@@ -332,13 +361,129 @@ with st.sidebar:
                     st.error("New passwords do not match.")
                 else:
                     user_data_df = conn.query("SELECT password FROM users WHERE id=:id", params={"id": st.session_state.user_id}, ttl=0)
-                    
                     if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
                         update_user_password(st.session_state.user_id, new_password)
                         st.success("Password changed successfully!")
                     else:
                         st.error("Incorrect current password.")
+
+# ---------------- ADMIN RECONSTRUCTED EXECUTIVE PANEL ---------------- #
+if is_admin:
+    st.header("🛠️ Admin Management Dashboard")
+    admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs([
+        "⚙️ Create Configuration Keys",
+        "🔑 Configured Access Registries",
+        "👥 Platform Accounts Overview",
+        "📋 Global Library Logs Master"
+    ])
+    
+    with admin_tab1:
+        st.subheader("Deploy Custom Library Configurations")
+        with st.form("admin_deploy_config_form", clear_on_submit=True):
+            lib_name_input = st.text_input("Configurable System / Library Name", placeholder="e.g., Central Library, Personal Shelf").strip()
+            lib_code_input = st.text_input("Unique Entry Access Code Key").strip()
+            submit_config = st.form_submit_button("Deploy Library Scope Configuration")
+            
+            if submit_config:
+                if not lib_name_input or not lib_code_input:
+                    st.error("All dynamic parameters are strictly required.")
+                else:
+                    try:
+                        current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        with conn.session as session:
+                            session.execute(text("""
+                                INSERT INTO library_configurations (library_name, access_code, created_at)
+                                VALUES (:n, :c, :cat)
+                            """), {"n": lib_name_input, "c": lib_code_input, "cat": current_ts})
+                            session.commit()
+                        st.success(f"Configuration set deployed! Code Key '{lib_code_input}' maps to storage target layout rules for '{lib_name_input}'.")
+                        st.rerun()
+                    except Exception:
+                        st.error("Failed to deploy layout rules. Verify this code isn't a duplicate registry item.")
+                        
+    with admin_tab2:
+        st.subheader("Active System Access Codes Registry")
+        all_configs_df = conn.query("SELECT id, library_name, access_code, created_at FROM library_configurations ORDER BY id DESC", ttl=0)
+        if not all_configs_df.empty:
+            for _, cfg_row in all_configs_df.iterrows():
+                cfg_id = int(cfg_row["id"])
+                cfg_name = cfg_row["library_name"]
+                cfg_code = cfg_row["access_code"]
+                
+                c_col1, c_col2 = st.columns([3, 1])
+                with c_col1:
+                    st.markdown(f"🔹 Code Key: **{cfg_code}** | Target Configuration Scope Name: `{cfg_name}`")
+                with c_col2:
+                    if st.button("Delete Configuration Code", key=f"del_code_{cfg_id}", type="secondary", use_container_width=True):
+                        with conn.session as session:
+                            session.execute(text("DELETE FROM library_configurations WHERE id=:id"), {"id": cfg_id})
+                            session.commit()
+                        st.success(f"Configuration template mapping rule '{cfg_code}' deleted.")
+                        st.rerun()
+        else:
+            st.info("No customizable configuration setup mappings provisioned yet.")
+            
+    with admin_tab3:
+        st.subheader("System Users Overview")
+        user_metrics = admin_get_all_users_metrics()
+        if user_metrics:
+            display_df = pd.DataFrame(user_metrics).drop(columns=["db_id"])
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+            st.write("")
+            st.caption("⚙️ Quick Actions")
+            delete_candidates = [u["Username"] for u in user_metrics if u["Username"].lower() != "admin"]
+            
+            if delete_candidates:
+                target_username = st.selectbox("Select account to remove:", delete_candidates)
+                if st.button("🚨 Terminate Account", type="secondary", use_container_width=True):
+                    target_id = next(u["db_id"] for u in user_metrics if u["Username"] == target_username)
+                    admin_delete_user_and_library(target_id)
+                    st.success(f"Successfully purged account: {target_username}")
+                    st.rerun()
+            else:
+                st.info("No external user accounts currently registered.")
+        else:
+            st.info("No system users found.")
+            
+    with admin_tab4:
+        st.subheader("Global Library Master Logs")
+        all_books = admin_get_all_books()
+        if all_books:
+            st.dataframe(pd.DataFrame(all_books), use_container_width=True, hide_index=True)
+        else:
+            st.info("No books recorded platform-wide.")
+    st.divider()
+
+# -------- GATEWAY RULE VERIFICATION CHALLENGE DECK -------- #
+if st.session_state.library_config is None:
+    st.subheader("🔒 Target Access Verification Required")
+    st.info("Please enter your venue configuration access code to open your layout tracking panels.")
+    
+    with st.form("gateway_verification_code_form"):
+        entered_code = st.text_input("Enter Access Code Key").strip()
+        submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
+        if submit_gate:
+            match_df = conn.query("SELECT library_name FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+            if not match_df.empty:
+                st.session_state.library_config = {
+                    "name": match_df.iloc[0]["library_name"],
+                    "access_code": entered_code
+                }
+                st.success(f"Access granted! Opening dynamic panel rules mapping parameters for: **{st.session_state.library_config['name']}**")
+                st.rerun()
+            else:
+                st.error("Invalid configuration key parameters. Please contact your system administrator.")
+    st.stop()
+
+# ---------------- RUNTIME CORE APPLICATION PANELS ---------------- #
+books_list = load_books_from_db(st.session_state.user_id)
+
+st.header(f"{dynamic_icon} Workspace: {st.session_state.library_config['name']}")
+
+# Dynamic layout components loading tracking boundaries
+with st.sidebar:
     st.divider()
     st.header("Add a Book")
     title = st.text_input("Book title")
@@ -364,7 +509,6 @@ with st.sidebar:
             st.success("All books have been cleared.")
             st.rerun()
 
-
 # Layout Architecture Dashboards
 col1, col2 = st.columns([2, 1])
 
@@ -383,7 +527,6 @@ with col2:
         st.bar_chart(counts)
     else:
         st.write("Add books to see the summary.")
-
 
 st.divider()
 st.subheader("Book Gallery")
@@ -442,43 +585,3 @@ if books_list:
                         st.rerun()
 else:
     st.write("Upload some books to display them here.")
-
-
-# 6. Admin Dashboard Panel
-if is_admin:
-    st.divider()
-    st.header("🛠️ Admin Management Dashboard")
-    st.caption("This panel is hidden from normal application accounts.")
-    
-    admin_col1, admin_col2 = st.columns(2)
-    
-    with admin_col1:
-        st.subheader("System Users Overview")
-        user_metrics = admin_get_all_users_metrics()
-        if user_metrics:
-            display_df = pd.DataFrame(user_metrics).drop(columns=["db_id"])
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-            
-            st.write("")
-            st.caption("⚙️ Quick Actions")
-            delete_candidates = [u["Username"] for u in user_metrics if u["Username"].lower() != "admin"]
-            
-            if delete_candidates:
-                target_username = st.selectbox("Select account to remove:", delete_candidates)
-                if st.button("🚨 Terminate Account", type="secondary", use_container_width=True):
-                    target_id = next(u["db_id"] for u in user_metrics if u["Username"] == target_username)
-                    admin_delete_user_and_library(target_id)
-                    st.success(f"Successfully purged account: {target_username}")
-                    st.rerun()
-            else:
-                st.info("No external user accounts currently registered.")
-        else:
-            st.info("No system users found.")
-            
-    with admin_col2:
-        st.subheader("Global Library Master Logs")
-        all_books = admin_get_all_books()
-        if all_books:
-            st.dataframe(pd.DataFrame(all_books), use_container_width=True, hide_index=True)
-        else:
-            st.info("No books recorded platform-wide.")
