@@ -716,14 +716,14 @@ if books_list:
     
                 action_edit, action_del = st.columns(2)
                 if is_leader or is_admin:
-                with action_edit:
-                    if st.button(f"📝 Edit", key=f"edit_btn_{book['id']}", use_container_width=True):
-                        st.session_state.editing_book_id = book["id"]
-                        st.rerun()
-                with action_del:
-                    if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
-                        delete_book_from_db(book["id"], st.session_state.user_id)
-                        st.success(f"Deleted '{book['title']}'")
-                        st.rerun()
+                     with action_edit:
+                          if st.button(f"📝 Edit", key=f"edit_btn_{book['id']}", use_container_width=True):
+                             st.session_state.editing_book_id = book["id"]
+                             st.rerun()
+                      with action_del:
+                          if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
+                             delete_book_from_db(book["id"], st.session_state.user_id)
+                             st.success(f"Deleted '{book['title']}'")
+                              st.rerun()
 else:
     st.write("Upload some books to display them here.")
