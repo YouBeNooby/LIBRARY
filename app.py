@@ -617,7 +617,13 @@ if st.session_state.library_config is None:
                 st.error("Invalid configuration key parameters.")
     st.stop()
 # ---------------- RUNTIME CORE APPLICATION PANELS ---------------- #
-books_list = load_books_from_db(st.session_state.user_id)
+# 1. Get the config_id first
+match_df = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", 
+                      params={"ac": st.session_state.library_config['access_code']}, ttl=0)
+cfg_id = int(match_df.iloc[0]["id"])
+
+# 2. Now load all books for this library
+books_list = load_books_from_db(cfg_id)
 
 st.header(f"{dynamic_icon} Workspace: {st.session_state.library_config['name']}")
 
