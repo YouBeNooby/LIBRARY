@@ -555,7 +555,7 @@ if st.session_state.library_config is None:
         remember_code = st.checkbox("Remember this access code")
         submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
-        if submit_gate:
+if submit_gate:
             is_first_member = False
             match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
             if not match_df.empty:
@@ -564,25 +564,41 @@ if st.session_state.library_config is None:
                 cfg_type = match_df.iloc[0]["library_type"]
                 cfg_max = int(match_df.iloc[0]["max_accounts"])
                 
-                # Query historical database registries tracking occupied allocations
+                # Query historical database registries
                 membership_log_df = conn.query("SELECT user_id FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
                 registered_member_ids = membership_log_df["user_id"].tolist() if not membership_log_df.empty else []
-                # Check validation boundaries logic metrics mapping
+                
+                # Check validation boundaries logic
                 grant_token_entry = False
-                if st.session_state.user_id in registered_member_ids or is_admin:
+                
+                # --- MODIFIED ADMIN CHECK ---
+                if is_admin:
+                    grant_token_entry = True
+                    # If Admin isn't registered in this specific library yet, add them
+                    if st.session_state.user_id not in registered_member_ids:
+                        with conn.session as session:
+                            session.execute(text("""
+                                INSERT INTO library_memberships (config_id, user_id, joined_at, is_leader)
+                                VALUES (:cid, :uid, :jat, :leader)
+                            """), {
+                                "cid": cfg_id, 
+                                "uid": st.session_state.user_id, 
+                                "jat": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "leader": True
+                            })
+                            session.commit()
+                
+                elif st.session_state.user_id in registered_member_ids:
                     grant_token_entry = True
                 else:
-                    # Account claiming a completely new registration seat slot space
+                    # Account claiming a new registration seat slot
                     if len(registered_member_ids) >= cfg_max:
                         if cfg_type == "Singular":
                             st.error("❌ Access Claim Refused. This singular library space has already been activated.")
                         else:
                             st.error(f"❌ Access Claim Refused. This Team container has reached its limit ({cfg_max}/{cfg_max}).")
                     else:
-                        # --- TEAM LEADER LOGIC ---
-                        # If list is empty, this user is the first member, therefore the Leader
                         is_first_member = (len(registered_member_ids) == 0)
-                        
                         grant_token_entry = True
                         current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         with conn.session as session:
@@ -604,13 +620,8 @@ if st.session_state.library_config is None:
                         "type": cfg_type,
                         "max_accounts": cfg_max
                     }
-                    
                     if remember_code:
-                        cookie_manager.set(
-                            cookie="library_access_code",
-                            val=entered_code,
-                            expires_at=datetime.now() + pd.Timedelta(days=30)
-                        )
+                        cookie_manager.set(cookie="library_access_code", val=entered_code, expires_at=datetime.now() + pd.Timedelta(days=30))
                     st.success(f"Access granted! Welcome, {'Team Leader' if is_first_member else 'Member'}.")
                     st.rerun()
             else:
