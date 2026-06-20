@@ -72,12 +72,17 @@ def make_hashes(password):
 def init_db():
     with conn.session as session:
         # Create users table
+# Member seat assignment map tracking table configuration
         session.execute(text("""
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE IF NOT EXISTS library_memberships (
                 id SERIAL PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                registration_date TEXT NOT NULL
+                config_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                joined_at TEXT NOT NULL,
+                is_leader BOOLEAN DEFAULT FALSE,
+                UNIQUE (config_id, user_id),
+                FOREIGN KEY (config_id) REFERENCES library_configurations(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """))
         # Create books table
@@ -543,7 +548,7 @@ if st.session_state.library_config is None:
         submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
         if submit_gate:
-            match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+            match_df = conn.query(text("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac"), params={"ac": entered_code}, ttl=0)
             if not match_df.empty:
                 cfg_id = int(match_df.iloc[0]["id"])
                 cfg_name = match_df.iloc[0]["library_name"]
@@ -551,7 +556,7 @@ if st.session_state.library_config is None:
                 cfg_max = int(match_df.iloc[0]["max_accounts"])
                 
                 # Query historical database registries tracking occupied allocations
-                membership_log_df = conn.query("SELECT user_id FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
+                membership_log_df = conn.query(text("SELECT user_id FROM library_memberships WHERE config_id=:cid"), params={"cid": cfg_id}, ttl=0)
                 registered_member_ids = membership_log_df["user_id"].tolist() if not membership_log_df.empty else []
                 
                 # Check validation boundaries logic metrics mapping
@@ -562,18 +567,26 @@ if st.session_state.library_config is None:
                     # Account claiming a completely new registration seat slot space
                     if len(registered_member_ids) >= cfg_max:
                         if cfg_type == "Singular":
-                            st.error("❌ Access Claim Refused. This singular library space has already been activated and claimed by another user account profile.")
+                            st.error("❌ Access Claim Refused. This singular library space has already been activated.")
                         else:
-                            st.error(f"❌ Access Claim Refused. This Team tracking container has reached its registration account limit cap ({cfg_max}/{cfg_max}).")
+                            st.error(f"❌ Access Claim Refused. This Team container has reached its limit ({cfg_max}/{cfg_max}).")
                     else:
-                        # Register the user seat choice transaction natively inside database storage logs
+                        # --- TEAM LEADER LOGIC ---
+                        # If list is empty, this user is the first member, therefore the Leader
+                        is_first_member = (len(registered_member_ids) == 0)
+                        
                         grant_token_entry = True
                         current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         with conn.session as session:
                             session.execute(text("""
-                                INSERT INTO library_memberships (config_id, user_id, joined_at)
-                                VALUES (:cid, :uid, :jat)
-                            """), {"cid": cfg_id, "uid": st.session_state.user_id, "jat": current_ts})
+                                INSERT INTO library_memberships (config_id, user_id, joined_at, is_leader)
+                                VALUES (:cid, :uid, :jat, :leader)
+                            """), {
+                                "cid": cfg_id, 
+                                "uid": st.session_state.user_id, 
+                                "jat": current_ts,
+                                "leader": is_first_member
+                            })
                             session.commit()
                 
                 if grant_token_entry:
@@ -590,12 +603,11 @@ if st.session_state.library_config is None:
                             val=entered_code,
                             expires_at=datetime.now() + pd.Timedelta(days=30)
                         )
-                    st.success(f"Access granted! Opening parameters for: **{st.session_state.library_config['name']}**")
+                    st.success(f"Access granted! Welcome, {'Team Leader' if is_first_member else 'Member'}.")
                     st.rerun()
             else:
-                st.error("Invalid configuration key parameters. Please contact your system administrator.")
+                st.error("Invalid configuration key parameters.")
     st.stop()
-
 # ---------------- RUNTIME CORE APPLICATION PANELS ---------------- #
 books_list = load_books_from_db(st.session_state.user_id)
 
@@ -650,6 +662,16 @@ with col2:
 st.divider()
 st.subheader("Book Gallery")
 
+# --- INSERT PERMISSION CHECK HERE ---
+leader_df = conn.query(text("""
+    SELECT is_leader FROM library_memberships 
+    WHERE user_id = :uid 
+    AND config_id = (SELECT id FROM library_configurations WHERE access_code = :ac)
+"""), params={"uid": st.session_state.user_id, "ac": st.session_state.library_config['access_code']}, ttl=0)
+
+is_leader = not leader_df.empty and leader_df.iloc[0]["is_leader"]
+# ------------------------------------
+
 if books_list:
     gallery_cols = st.columns(3)
     for i, book in enumerate(books_list):
@@ -691,8 +713,9 @@ if books_list:
                         st.caption("⚠️ [Image Display Error]")
                 else:
                     st.write("No photo uploaded.")
-
+    
                 action_edit, action_del = st.columns(2)
+                if is_leader or is_admin:
                 with action_edit:
                     if st.button(f"📝 Edit", key=f"edit_btn_{book['id']}", use_container_width=True):
                         st.session_state.editing_book_id = book["id"]
