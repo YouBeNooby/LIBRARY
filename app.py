@@ -280,7 +280,7 @@ def admin_delete_user_and_library(target_user_id):
             session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
             
             # Assuming 'court_config' has a user_id column
-            session.execute(text("DELETE FROM court_configurations WHERE user_id = :uid"), {"uid": target_user_id})
+            session.execute(text("DELETE FROM court_configurations WHERE id = :uid"), {"uid": target_user_id})
             
             # 2. Finally, delete the user
             session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
