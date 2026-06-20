@@ -719,7 +719,7 @@ if books_list:
                         st.session_state.editing_book_id = None
                         st.rerun()
             else:
-                st.markdown(f"**{book['title']}**")
+                st.markdown(f"**{book['title']} | Owner: {book['username']}**")
                 st.caption(book["category"])
                 if book["image_bytes"]:
                     try:
