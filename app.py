@@ -250,19 +250,34 @@ def load_books_from_db(config_id, is_admin, user_id):
         return [dict(row) for row in result.mappings()]
 
 
-def admin_get_all_books():
+def admin_get_all_users_metrics():
+    # Use a simpler query first to verify if the issue is the window function
     query = """
         SELECT 
-            books.id AS book_id,
-            users.username AS "Owner", 
-            books.title AS "Title", 
-            books.category AS "Category"
-        FROM books
-        JOIN users ON books.user_id = users.id
-        ORDER BY books.id ASC
+            users.id AS db_id, 
+            users.username AS "Username", 
+            users.registration_date,
+            COUNT(books.id) AS "Books Tracked"
+        FROM users
+        LEFT JOIN books ON users.id = books.user_id
+        GROUP BY users.id, users.username, users.registration_date
+        ORDER BY users.registration_date ASC
     """
-    df = conn.query(query, ttl=0)
-    return df.to_dict(orient="records")
+    try:
+        df = conn.query(query, ttl=0)
+        if df.empty:
+            return []
+            
+        # Add the User No. in Python (Pandas) instead of SQL to avoid SQL window function errors
+        df = df.sort_values("registration_date")
+        df["User No."] = range(1, len(df) + 1)
+        
+        # Clean up columns for the display
+        result_df = df[["User No.", "db_id", "Username", "Books Tracked"]]
+        return result_df.to_dict(orient="records")
+    except Exception as e:
+        st.error(f"SQL Error: {e}")
+        return []
 
 
 def admin_delete_user_and_library(target_user_id):
