@@ -225,35 +225,29 @@ def delete_all_books_from_db(user_id):
         session.commit()
 
 
-def load_books_from_db(config_id):
+def load_books_from_db(config_id, is_admin, user_id):
     with conn.session as session:
-        # This query gets all books where the book owner is a member of this library config
-        query = """
-            SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
-            FROM books b
-            JOIN library_memberships lm ON b.user_id = lm.user_id
-            JOIN users u ON b.user_id = u.id
-            WHERE lm.config_id = :cid
-            ORDER BY b.id ASC
-        """
-        result = session.execute(text(query), {"cid": config_id})
+        # If Admin, ignore the membership join. If member, use the join.
+        if is_admin:
+            query = """
+                SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
+                FROM books b
+                JOIN users u ON b.user_id = u.id
+                ORDER BY b.id ASC
+            """
+            result = session.execute(text(query))
+        else:
+            query = """
+                SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
+                FROM books b
+                JOIN library_memberships lm ON b.user_id = lm.user_id
+                JOIN users u ON b.user_id = u.id
+                WHERE lm.config_id = :cid
+                ORDER BY b.id ASC
+            """
+            result = session.execute(text(query), {"cid": config_id})
+            
         return [dict(row) for row in result.mappings()]
-
-# --- ADMIN PIPELINE FUNCTIONS ---
-def admin_get_all_users_metrics():
-    query = """
-        SELECT 
-            (ROW_NUMBER() OVER (ORDER BY users.registration_date ASC)) AS "User No.",
-            users.id AS db_id, 
-            users.username AS "Username", 
-            COUNT(books.id) AS "Books Tracked"
-        FROM users
-        LEFT JOIN books ON users.id = books.user_id
-        GROUP BY users.id, users.username, users.registration_date
-        ORDER BY users.registration_date ASC
-    """
-    df = conn.query(query, ttl=0)
-    return df.to_dict(orient="records")
 
 
 def admin_get_all_books():
@@ -617,13 +611,13 @@ if st.session_state.library_config is None:
                 st.error("Invalid configuration key parameters.")
     st.stop()
 # ---------------- RUNTIME CORE APPLICATION PANELS ---------------- #
-# 1. Get the config_id first
+# Before calling:
 match_df = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", 
                       params={"ac": st.session_state.library_config['access_code']}, ttl=0)
-cfg_id = int(match_df.iloc[0]["id"])
+cfg_id = int(match_df.iloc[0]["id"]) if not match_df.empty else None
 
-# 2. Now load all books for this library
-books_list = load_books_from_db(cfg_id)
+# Call the updated function
+books_list = load_books_from_db(cfg_id, is_admin, st.session_state.user_id)
 
 st.header(f"{dynamic_icon} Workspace: {st.session_state.library_config['name']}")
 
