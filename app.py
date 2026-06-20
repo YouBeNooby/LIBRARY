@@ -555,9 +555,11 @@ if st.session_state.library_config is None:
         remember_code = st.checkbox("Remember this access code")
         submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
-if submit_gate:
+        # This 'if' must be indented to be inside the 'with' block
+        if submit_gate:
             is_first_member = False
             match_df = conn.query("SELECT id, library_name, library_type, max_accounts FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+            
             if not match_df.empty:
                 cfg_id = int(match_df.iloc[0]["id"])
                 cfg_name = match_df.iloc[0]["library_name"]
@@ -626,7 +628,9 @@ if submit_gate:
                     st.rerun()
             else:
                 st.error("Invalid configuration key parameters.")
-st.stop()
+
+    # st.stop() remains outside the form, aligned with the 'if' or 'with'
+    st.stop()
 # ---------------- RUNTIME CORE APPLICATION PANELS ---------------- #
 # 1. Get the config_id first
 match_df = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", 
