@@ -662,15 +662,16 @@ with col2:
 st.divider()
 st.subheader("Book Gallery")
 
-# --- INSERT PERMISSION CHECK HERE ---
-leader_df = conn.query(text("""
-    SELECT is_leader FROM library_memberships 
-    WHERE user_id = :uid 
-    AND config_id = (SELECT id FROM library_configurations WHERE access_code = :ac)
-"""), params={"uid": st.session_state.user_id, "ac": st.session_state.library_config['access_code']}, ttl=0)
+# --- START OF YOUR PERMISSION CHECK ---
+# We use a string here instead of text() to avoid the UnhashableParamError
+leader_query = "SELECT is_leader FROM library_memberships WHERE user_id = :uid AND config_id = (SELECT id FROM library_configurations WHERE access_code = :ac)"
 
-is_leader = not leader_df.empty and leader_df.iloc[0]["is_leader"]
-# ------------------------------------
+leader_df = conn.query(leader_query, params={"uid": st.session_state.user_id, "ac": st.session_state.library_config['access_code']}, ttl=0)
+
+is_leader = False
+if not leader_df.empty:
+    is_leader = leader_df.iloc[0]["is_leader"]
+# --- END OF YOUR PERMISSION CHECK ---
 
 if books_list:
     gallery_cols = st.columns(3)
