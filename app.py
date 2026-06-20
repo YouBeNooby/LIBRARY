@@ -719,8 +719,8 @@ if books_list:
                         st.session_state.editing_book_id = None
                         st.rerun()
             else:
-                st.markdown(f"**{book['title']} | Owner: {book['username']}**")
-                st.caption(book["category"])
+                st.markdown(f"**{book['title']}**")
+                st.caption(f"Category: {book['category']} | Owner: {book['username']}")
                 if book["image_bytes"]:
                     try:
                         st.image(Image.open(io.BytesIO(bytes(book["image_bytes"]))), use_container_width=True)
