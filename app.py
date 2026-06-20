@@ -225,14 +225,19 @@ def delete_all_books_from_db(user_id):
         session.commit()
 
 
-def load_books_from_db(user_id):
+def load_books_from_db(config_id):
     with conn.session as session:
-        result = session.execute(
-            text("SELECT id, title, category, image_bytes, image_name FROM books WHERE user_id = :uid ORDER BY id ASC"),
-            {"uid": user_id}
-        )
+        # This query gets all books where the book owner is a member of this library config
+        query = """
+            SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
+            FROM books b
+            JOIN library_memberships lm ON b.user_id = lm.user_id
+            JOIN users u ON b.user_id = u.id
+            WHERE lm.config_id = :cid
+            ORDER BY b.id ASC
+        """
+        result = session.execute(text(query), {"cid": config_id})
         return [dict(row) for row in result.mappings()]
-
 
 # --- ADMIN PIPELINE FUNCTIONS ---
 def admin_get_all_users_metrics():
