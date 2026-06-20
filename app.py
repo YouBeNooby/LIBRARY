@@ -373,11 +373,14 @@ with st.sidebar:
     
     if st.session_state.library_config is not None:
         st.info(f"📋 Scope: `{st.session_state.library_config['name']}` ({st.session_state.library_config['type']})")
-        if st.button("🔄 Change Access Code", use_container_width=True):
+if st.button("🔄 Change Access Code", use_container_width=True):
+            # Clear all session state related to the library
             st.session_state.library_config = None
+            
+            # Explicitly kill the cookie
             try:
                 cookie_manager.delete(cookie="library_access_code")
-            except Exception:
+            except:
                 pass
             st.rerun()
             
