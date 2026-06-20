@@ -273,9 +273,15 @@ def admin_get_all_books():
 
 def admin_delete_user_and_library(target_user_id):
     with conn.session as session:
+        # 1. Delete associated memberships first
+        session.execute(text("DELETE FROM library_memberships WHERE user_id = :uid"), {"uid": target_user_id})
+        
+        # 2. Delete associated books
         session.execute(text("DELETE FROM books WHERE user_id = :uid"), {"uid": target_user_id})
+        
+        # 3. NOW delete the user
         session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": target_user_id})
-        session.execute(text("DELETE FROM user_sessions WHERE user_id = :uid"), {"uid": target_user_id})
+        
         session.commit()
 
 
