@@ -249,7 +249,31 @@ def load_books_from_db(config_id, is_admin, user_id):
             
         return [dict(row) for row in result.mappings()]
 
-
+def admin_get_all_users_metrics():
+    # Fetch data
+    query = """
+        SELECT 
+            users.id AS db_id, 
+            users.username AS "Username", 
+            users.registration_date,
+            COUNT(books.id) AS "Books Tracked"
+        FROM users
+        LEFT JOIN books ON users.id = books.user_id
+        GROUP BY users.id, users.username, users.registration_date
+        ORDER BY users.registration_date ASC
+    """
+    df = conn.query(query, ttl=0)
+    
+    if df.empty:
+        return []
+        
+    # Generate the User No. in Python
+    df = df.sort_values("registration_date")
+    df.insert(0, "User No.", range(1, len(df) + 1))
+    
+    # Return as list of dictionaries
+    return df.to_dict(orient="records")
+    
 def admin_get_all_books():
     query = """
         SELECT 
