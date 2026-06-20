@@ -589,7 +589,7 @@ else:
                             })
                             session.commit()
                 
-                if grant_token_entry:
+                 if grant_token_entry:
                     st.session_state.library_config = {
                         "name": cfg_name,
                         "access_code": entered_code,
