@@ -556,7 +556,7 @@ if st.session_state.library_config is None:
                 cfg_max = int(match_df.iloc[0]["max_accounts"])
                 
                 # Query historical database registries tracking occupied allocations
-                membership_log_df = conn.query(text("SELECT user_id FROM library_memberships WHERE config_id=:cid"), params={"cid": cfg_id}, ttl=0)
+                membership_log_df = conn.query("SELECT user_id FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
                 registered_member_ids = membership_log_df["user_id"].tolist() if not membership_log_df.empty else []
                 
                 # Check validation boundaries logic metrics mapping
