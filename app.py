@@ -570,7 +570,7 @@ if st.session_state.library_config is None:
                             st.error("❌ Access Claim Refused. This singular library space has already been activated.")
                         else:
                             st.error(f"❌ Access Claim Refused. This Team container has reached its limit ({cfg_max}/{cfg_max}).")
-                    else:
+else:
                         # --- TEAM LEADER LOGIC ---
                         # If list is empty, this user is the first member, therefore the Leader
                         is_first_member = (len(registered_member_ids) == 0)
