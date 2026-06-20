@@ -626,7 +626,7 @@ if submit_gate:
                     st.rerun()
             else:
                 st.error("Invalid configuration key parameters.")
-st.stop()
+    st.stop()
 # ---------------- RUNTIME CORE APPLICATION PANELS ---------------- #
 # 1. Get the config_id first
 match_df = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", 
@@ -731,7 +731,7 @@ if books_list:
                         st.rerun()
             else:
                 st.markdown(f"**{book['title']}**")
-                st.caption(f"Category: {book['category']} | Owner: {book['username']}")
+                st.caption(book["category"])
                 if book["image_bytes"]:
                     try:
                         st.image(Image.open(io.BytesIO(bytes(book["image_bytes"]))), use_container_width=True)
