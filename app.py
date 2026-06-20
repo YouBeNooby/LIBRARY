@@ -23,12 +23,19 @@ if "library_config" not in st.session_state:
 # 2. Establish Persistent Cloud Database Connection
 conn = st.connection("postgresql", type="sql")
 
+# Initialize Cookie Manager early so interceptors can read them
+cookie_manager = stx.CookieManager()
+
 # ACTIVE KICK-OUT TRANS-GUARD SYSTEM
 if st.session_state.logged_in and st.session_state.library_config is not None:
     active_code = st.session_state.library_config.get("access_code")
     check_active_df = conn.query("SELECT library_name FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
     if check_active_df.empty:
         st.session_state.library_config = None
+        try:
+            cookie_manager.delete(cookie="library_access_code")
+        except Exception:
+            pass
         st.warning("⚠️ The active session configuration access code was deleted by an administrator.")
 
 # 3. Dynamic Page Layout Title Mapping Construction Engine
@@ -246,9 +253,6 @@ def admin_delete_user_and_library(target_user_id):
 # Trigger initial table checks on cloud environment
 init_db()
 
-# Initialize Cookie Manager
-cookie_manager = stx.CookieManager()
-
 # BROWSER COOKIE AUTO-LOGIN VERIFIER
 if not st.session_state.logged_in:
     cookie_token = cookie_manager.get(cookie="book_library_token")
@@ -263,6 +267,17 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.user_id = int(token_check.iloc[0]["user_id"])
             st.session_state.username = token_check.iloc[0]["username"]
+
+# BROWSER COOKIE ACCESS CODE INTERCEPTOR
+if st.session_state.logged_in and st.session_state.library_config is None:
+    saved_code = cookie_manager.get(cookie="library_access_code")
+    if saved_code:
+        match_df = conn.query("SELECT library_name FROM library_configurations WHERE access_code=:ac", params={"ac": saved_code}, ttl=0)
+        if not match_df.empty:
+            st.session_state.library_config = {
+                "name": match_df.iloc[0]["library_name"],
+                "access_code": saved_code
+            }
 
 # 4. Authentication UI Workflow
 if not st.session_state.logged_in:
@@ -334,6 +349,10 @@ with st.sidebar:
         st.info(f"📋 Scope: `{st.session_state.library_config['name']}`")
         if st.button("🔄 Change Access Code", use_container_width=True):
             st.session_state.library_config = None
+            try:
+                cookie_manager.delete(cookie="library_access_code")
+            except Exception:
+                pass
             st.rerun()
             
     if st.button("Log Out", type="primary", use_container_width=True):
@@ -343,6 +362,11 @@ with st.sidebar:
                 session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": active_cookie})
                 session.commit()
             cookie_manager.delete(cookie="book_library_token")
+            
+        try:
+            cookie_manager.delete(cookie="library_access_code")
+        except Exception:
+            pass
                 
         st.session_state.logged_in = False
         st.session_state.user_id = None
@@ -386,7 +410,7 @@ if is_admin:
     with admin_tab1:
         st.subheader("Deploy Custom Library Configurations")
         with st.form("admin_deploy_config_form", clear_on_submit=True):
-            lib_name_input = st.text_input("Configurable System / Library Name", placeholder="e.g., Central Library, Personal Shelf").strip()
+            lib_name_input = st.text_input("Configurable System / Library Name", placeholder="e.g., User's Library, Book Club Library").strip()
             lib_code_input = st.text_input("Unique Entry Access Code Key").strip()
             submit_config = st.form_submit_button("Deploy Library Scope Configuration")
             
@@ -481,6 +505,7 @@ if st.session_state.library_config is None:
     
     with st.form("gateway_verification_code_form"):
         entered_code = st.text_input("Enter Access Code Key").strip()
+        remember_code = st.checkbox("Remember this access code")
         submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
         
         if submit_gate:
@@ -490,6 +515,13 @@ if st.session_state.library_config is None:
                     "name": match_df.iloc[0]["library_name"],
                     "access_code": entered_code
                 }
+                
+                if remember_code:
+                    cookie_manager.set(
+                        cookie="library_access_code",
+                        val=entered_code,
+                        expires_at=datetime.now() + pd.Timedelta(days=30)
+                    )
                 st.success(f"Access granted! Opening dynamic panel rules mapping parameters for: **{st.session_state.library_config['name']}**")
                 st.rerun()
             else:
