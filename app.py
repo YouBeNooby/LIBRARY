@@ -133,7 +133,7 @@ def init_db():
         session.commit()
         
         # Hardcoded Admin Account Insurance
-        hashed_admin_password = make_hashes("LeBakri!!18")
+        hashed_admin_password = make_hashes("LeBakri18!!")
         try:
             res = session.execute(text("SELECT id FROM users WHERE username = 'admin'")).fetchone()
             if not res:
