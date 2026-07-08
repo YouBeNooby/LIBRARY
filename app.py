@@ -351,6 +351,64 @@ if not st.session_state.logged_in:
 
 is_admin = st.session_state.username.lower() == "admin"
 
+# ---------------- GLOBAL MANAGEMENT SIDEBAR ---------------- #
+with st.sidebar:
+    st.header("Control Panel")
+    st.success(f"User: **{st.session_state.username}**" + (" *(Admin)*" if is_admin else ""))
+    
+    if st.session_state.library_config is not None:
+        st.info(f"📋 Scope: `{st.session_state.library_config['name']}` ({st.session_state.library_config['type']})")
+        if st.button("🔄 Change Access Code", use_container_width=True):
+            st.session_state.library_config = None
+            try:
+                cookie_manager.delete(cookie="library_access_code")
+            except:
+                pass
+            st.rerun()
+            
+    if st.button("Log Out", type="primary", use_container_width=True):
+        active_cookie = cookie_manager.get(cookie="book_library_token")
+        if active_cookie:
+            with conn.session as session:
+                session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": active_cookie})
+                session.commit()
+            cookie_manager.delete(cookie="book_library_token")
+            
+        try:
+            cookie_manager.delete(cookie="library_access_code")
+        except:
+            pass
+                
+        st.session_state.logged_in = False
+        st.session_state.user_id = None
+        st.session_state.username = None
+        st.session_state.library_config = None
+        st.session_state.editing_book_id = None
+        st.query_params.clear()
+        st.rerun()
+        
+    with st.expander("👤 Account Security"):
+        st.subheader("Change Password")
+        with st.form("change_password_form", clear_on_submit=True):
+            current_password = st.text_input("Current Password", type="password")
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+            submit_change = st.form_submit_button("Update Password", use_container_width=True)
+            
+            if submit_change:
+                if not current_password or not new_password or not confirm_password:
+                    st.error("All password fields are required.")
+                elif new_password != confirm_password:
+                    st.error("New passwords do not match.")
+                else:
+                    user_data_df = conn.query("SELECT password FROM users WHERE id=:id", params={"id": st.session_state.user_id}, ttl=0)
+                    if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
+                        update_user_password(st.session_state.user_id, new_password)
+                        st.success("Password changed successfully!")
+                    else:
+                        st.error("Incorrect current password.")
+
+
 # ADMIN RECONSTRUCTED EXECUTIVE PANEL
 if is_admin:
     st.header("🛠️ Admin Management Dashboard")
@@ -552,7 +610,7 @@ members_df = conn.query(members_query, params={"cid": cfg_id}, ttl=0)
 
 with st.sidebar:
     st.divider()
-    st.header("Control Panel")
+    st.header("Workspace Tools")
     
     with st.expander("👥 View Everyone in Library"):
         if not members_df.empty:
