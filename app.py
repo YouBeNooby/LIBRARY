@@ -117,21 +117,6 @@ def init_db():
             )
         """))
         session.commit()
-        
-        hashed_admin_password = make_hashes("LeBakri18!!")
-        try:
-            res = session.execute(text("SELECT id FROM users WHERE username = 'admin'")).fetchone()
-            if not res:
-                session.execute(text("""
-                    INSERT INTO users (username, password, registration_date) 
-                    VALUES (:u, :p, :r)
-                """), {"u": "admin", "p": hashed_admin_password, "r": "2000-01-01 00:00:00"})
-                session.commit()
-            else:
-                session.execute(text("UPDATE users SET password = :p WHERE username = 'admin'"), {"p": hashed_admin_password})
-                session.commit()
-        except Exception:
-            session.rollback()
 
 def add_user(username, password):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -204,14 +189,17 @@ def delete_all_books_from_db(config_id, user_id):
 def load_books_from_db(config_id, is_admin):
     with conn.session as session:
         if is_admin:
+            # ADMIN: Bypasses membership, but ONLY loads books for this specific library code
             query = """
                 SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
                 FROM books b
                 JOIN users u ON b.user_id = u.id
+                WHERE b.config_id = :cid
                 ORDER BY b.id ASC
             """
-            result = session.execute(text(query))
+            result = session.execute(text(query), {"cid": config_id})
         else:
+            # MEMBER: Must be in library_memberships to see books
             query = """
                 SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
                 FROM books b
@@ -317,9 +305,7 @@ if not st.session_state.logged_in:
             if not username or not password:
                 st.error("Please fill in all fields.")
             elif auth_mode == "Register":
-                if username.lower() == "admin":
-                    st.error("The username 'admin' is a reserved system identifier.")
-                elif add_user(username, password):
+                if add_user(username, password):
                     st.success("Registration successful! You can now switch to Login.")
                 else:
                     st.error("Username already taken or network issue occurred.")
@@ -349,7 +335,11 @@ if not st.session_state.logged_in:
                     st.error("Invalid username or password.")
     st.stop()
 
-is_admin = st.session_state.username.lower() == "admin"
+# Helper flag for admin checking
+is_admin = False
+if st.session_state.username:
+    # Adjust this to match however you identify admins now
+    is_admin = st.session_state.username.lower() == "admin"
 
 # ---------------- GLOBAL MANAGEMENT SIDEBAR ---------------- #
 with st.sidebar:
@@ -533,18 +523,8 @@ if st.session_state.library_config is None:
                 
                 grant_token_entry = False
                 if is_admin:
+                    # ADMIN BYPASS: Grants entry instantly without joining table
                     grant_token_entry = True
-                    if st.session_state.user_id not in registered_member_ids:
-                        with conn.session as session:
-                            session.execute(text("""
-                                INSERT INTO library_memberships (config_id, user_id, joined_at, is_leader)
-                                VALUES (:cid, :uid, :jat, :leader)
-                            """), {
-                                "cid": cfg_id, "uid": st.session_state.user_id, 
-                                "jat": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "leader": True
-                            })
-                            session.commit()
                 elif st.session_state.user_id in registered_member_ids:
                     grant_token_entry = True
                 else:
