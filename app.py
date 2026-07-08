@@ -2,7 +2,6 @@ from datetime import datetime
 import hashlib
 import io
 import secrets
-from extra_streamlit_components import extra_streamlit_components as stx  # depending on your setup, or standard extra_streamlit_components
 import extra_streamlit_components as stx
 import pandas as pd
 from PIL import Image
