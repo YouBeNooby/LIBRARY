@@ -252,7 +252,6 @@ def admin_delete_user_and_library(target_user_id):
 init_db()
 
 # --- AUTO-LOGIN / COOKIE LOGIC ---
-# Notice we check if we are currently trying to add a NEW account to skip this
 if not st.session_state.logged_in and not st.session_state.adding_new_account:
     cookie_token = cookie_manager.get(cookie="book_library_token")
     if cookie_token:
@@ -291,7 +290,8 @@ if not st.session_state.logged_in:
         
     auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
     
-    with st.form("auth_form"):
+    # FIX: Added clear_on_submit=True right here
+    with st.form("auth_form", clear_on_submit=True):
         username = st.text_input("Username").strip()
         password = st.text_input("Password", type="password")
         remember_me = False
@@ -310,9 +310,7 @@ if not st.session_state.logged_in:
             elif auth_mode == "Login":
                 user_record = login_user(username, password)
                 if user_record:
-                    # Reset the adding new account flag
                     st.session_state.adding_new_account = False
-                    # Add to vault and log in
                     st.session_state.account_vault[username] = user_record[0]
                     st.session_state.logged_in = True
                     st.session_state.user_id = user_record[0]
@@ -330,7 +328,6 @@ if not st.session_state.logged_in:
                 else:
                     st.error("Invalid username or password.")
                     
-    # Escape hatch in case they change their mind about adding an account
     if st.session_state.adding_new_account:
         if st.button("Cancel & Return to Vault", use_container_width=True):
             st.session_state.adding_new_account = False
@@ -501,7 +498,7 @@ if is_admin:
 if st.session_state.library_config is None:
     st.subheader("🔒 Target Access Verification Required")
     st.info("Please enter your venue configuration access code to open your layout tracking panels.")
-    with st.form("gateway_verification_code_form"):
+    with st.form("gateway_verification_code_form", clear_on_submit=True):
         entered_code = st.text_input("Enter Access Code Key").strip()
         remember_code = st.checkbox("Remember this access code")
         if st.form_submit_button("Verify & Mount Storage Scope Layout"):
