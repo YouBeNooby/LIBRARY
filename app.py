@@ -8,20 +8,17 @@ from PIL import Image
 import streamlit as st
 from sqlalchemy import text
 
-# --- BASELINE INITIALIZATION & PARAMETERS ISOLATION INTERCEPTIONS ---
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = None
-if "user_id" not in st.session_state:
-    st.session_state.user_id = None
-if "editing_book_id" not in st.session_state:
-    st.session_state.editing_book_id = None
-if "library_config" not in st.session_state:
-    st.session_state.library_config = None
+# --- BASELINE INITIALIZATION ---
+if "logged_in" not in st.session_state: st.session_state.logged_in = False
+if "username" not in st.session_state: st.session_state.username = None
+if "user_id" not in st.session_state: st.session_state.user_id = None
+if "editing_book_id" not in st.session_state: st.session_state.editing_book_id = None
+if "library_config" not in st.session_state: st.session_state.library_config = None
+if "account_vault" not in st.session_state: st.session_state.account_vault = {}
 
 conn = st.connection("postgresql", type="sql")
 cookie_manager = stx.CookieManager()
+DEFAULT_CATEGORIES = ["Read pending", "Reading in progress", "Already read", "Read again", "Give away", "Wishlist"]
 
 # ACTIVE KICK-OUT TRANS-GUARD SYSTEM
 if st.session_state.logged_in and st.session_state.library_config is not None:
@@ -42,7 +39,7 @@ if st.session_state.logged_in and st.session_state.library_config is not None:
         if raw_cats:
             st.session_state.library_config["categories"] = [c.strip() for c in raw_cats.split(",") if c.strip()]
         else:
-            st.session_state.library_config["categories"] = ["Read pending", "Reading in progress", "Already read", "Read again", "Give away", "Wishlist"]
+            st.session_state.library_config["categories"] = DEFAULT_CATEGORIES
 
 dynamic_title = "Book Library"
 dynamic_icon = "📚"
@@ -56,8 +53,7 @@ elif st.session_state.username == "admin":
 
 st.set_page_config(page_title=dynamic_title, page_icon=dynamic_icon, layout="wide")
 
-DEFAULT_CATEGORIES = ["Read pending", "Reading in progress", "Already read", "Read again", "Give away", "Wishlist"]
-
+# --- DATABASE HELPERS ---
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
@@ -189,7 +185,6 @@ def delete_all_books_from_db(config_id, user_id):
 def load_books_from_db(config_id, is_admin):
     with conn.session as session:
         if is_admin:
-            # ADMIN: Bypasses membership, but ONLY loads books for this specific library code
             query = """
                 SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
                 FROM books b
@@ -199,7 +194,6 @@ def load_books_from_db(config_id, is_admin):
             """
             result = session.execute(text(query), {"cid": config_id})
         else:
-            # MEMBER: Must be in library_memberships to see books
             query = """
                 SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
                 FROM books b
@@ -224,8 +218,7 @@ def admin_get_all_users_metrics():
         ORDER BY users.registration_date ASC
     """
     df = conn.query(query, ttl=0)
-    if df.empty:
-        return []
+    if df.empty: return []
     df = df.sort_values("registration_date")
     df.insert(0, "User No.", range(1, len(df) + 1))
     return df.to_dict(orient="records")
@@ -259,21 +252,19 @@ def admin_delete_user_and_library(target_user_id):
 
 init_db()
 
-# BROWSER COOKIE AUTO-LOGIN VERIFIER
+# --- AUTO-LOGIN / COOKIE LOGIC ---
 if not st.session_state.logged_in:
     cookie_token = cookie_manager.get(cookie="book_library_token")
     if cookie_token:
-        token_check = conn.query(
-            "SELECT user_id, username FROM user_sessions WHERE token = :t",
-            params={"t": cookie_token},
-            ttl=0
-        )
+        token_check = conn.query("SELECT user_id, username FROM user_sessions WHERE token = :t", params={"t": cookie_token}, ttl=0)
         if not token_check.empty:
+            username = token_check.iloc[0]["username"]
+            user_id = int(token_check.iloc[0]["user_id"])
             st.session_state.logged_in = True
-            st.session_state.user_id = int(token_check.iloc[0]["user_id"])
-            st.session_state.username = token_check.iloc[0]["username"]
+            st.session_state.user_id = user_id
+            st.session_state.username = username
+            st.session_state.account_vault[username] = user_id
 
-# BROWSER COOKIE ACCESS CODE INTERCEPTOR
 if st.session_state.logged_in and st.session_state.library_config is None:
     saved_code = cookie_manager.get(cookie="library_access_code")
     if saved_code:
@@ -289,18 +280,19 @@ if st.session_state.logged_in and st.session_state.library_config is None:
                 "categories": cats
             }
 
-# Authentication UI Workflow
+# --- AUTHENTICATION & VAULT UI ---
 if not st.session_state.logged_in:
     st.title("📚 Book Library")
     st.subheader("Please Login or Register to access your collection")
     auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
     with st.form("auth_form"):
-        username = st.text_input("Username", key=f"user_{auth_mode}").strip()
-        password = st.text_input("Password", type="password", key=f"pass_{auth_mode}")
+        username = st.text_input("Username").strip()
+        password = st.text_input("Password", type="password")
         remember_me = False
         if auth_mode == "Login":
-            remember_me = st.checkbox("Keep me logged in", key="remember_Login")
+            remember_me = st.checkbox("Keep me logged in")
         submit_auth = st.form_submit_button(auth_mode)
+        
         if submit_auth:
             if not username or not password:
                 st.error("Please fill in all fields.")
@@ -312,68 +304,76 @@ if not st.session_state.logged_in:
             elif auth_mode == "Login":
                 user_record = login_user(username, password)
                 if user_record:
+                    st.session_state.account_vault[username] = user_record[0]
                     st.session_state.logged_in = True
                     st.session_state.user_id = user_record[0]
-                    st.session_state.username = user_record[1]
+                    st.session_state.username = username
                     if remember_me:
                         secure_token = secrets.token_urlsafe(32)
-                        current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         with conn.session as session:
-                            session.execute(text("""
-                                INSERT INTO user_sessions (token, user_id, username, created_at)
-                                VALUES (:t, :uid, :u, :c)
-                            """), {"t": secure_token, "uid": user_record[0], "u": user_record[1], "c": current_timestamp})
+                            session.execute(text("INSERT INTO user_sessions (token, user_id, username, created_at) VALUES (:t, :uid, :u, :c)"), 
+                                            {"t": secure_token, "uid": user_record[0], "u": username, "c": current_ts})
                             session.commit()
-                        cookie_manager.set(
-                            cookie="book_library_token",
-                            val=secure_token,
-                            expires_at=datetime.now() + pd.Timedelta(days=30)
-                        )
-                    st.query_params.clear()
+                        cookie_manager.set(cookie="book_library_token", val=secure_token, expires_at=datetime.now() + pd.Timedelta(days=30))
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
     st.stop()
 
-# Helper flag for admin checking
-is_admin = False
-if st.session_state.username:
-    # Adjust this to match however you identify admins now
-    is_admin = st.session_state.username.lower() == "admin"
+is_admin = st.session_state.username.lower() == "admin"
 
 # ---------------- GLOBAL MANAGEMENT SIDEBAR ---------------- #
 with st.sidebar:
     st.header("Control Panel")
-    st.success(f"User: **{st.session_state.username}**" + (" *(Admin)*" if is_admin else ""))
+    st.success(f"Active: **{st.session_state.username}**" + (" *(Admin)*" if is_admin else ""))
     
+    # --- ACCOUNT VAULT SWITCHER & REMOVER ---
+    if len(st.session_state.account_vault) > 1:
+        st.divider()
+        st.subheader("Account Vault")
+        
+        vault_users = list(st.session_state.account_vault.keys())
+        current_idx = vault_users.index(st.session_state.username)
+        switch_to = st.selectbox("Switch Account", vault_users, index=current_idx)
+        
+        if switch_to != st.session_state.username:
+            if st.button("Apply Switch", use_container_width=True):
+                st.session_state.username = switch_to
+                st.session_state.user_id = st.session_state.account_vault[switch_to]
+                st.session_state.library_config = None 
+                st.rerun()
+
+        st.caption("Remove account from vault:")
+        for user in vault_users:
+            if user != st.session_state.username:
+                if st.button(f"🗑️ Remove {user}", key=f"rem_{user}", use_container_width=True):
+                    del st.session_state.account_vault[user]
+                    st.rerun()
+
+    if st.button("➕ Add Another Account", use_container_width=True):
+        st.session_state.logged_in = False
+        st.rerun()
+
+    st.divider()
     if st.session_state.library_config is not None:
         st.info(f"📋 Scope: `{st.session_state.library_config['name']}` ({st.session_state.library_config['type']})")
         if st.button("🔄 Change Access Code", use_container_width=True):
             st.session_state.library_config = None
-            try:
-                cookie_manager.delete(cookie="library_access_code")
-            except:
-                pass
+            try: cookie_manager.delete(cookie="library_access_code")
+            except: pass
             st.rerun()
             
-    if st.button("Log Out", type="primary", use_container_width=True):
+    if st.button("Log Out Entire Session", type="primary", use_container_width=True):
         active_cookie = cookie_manager.get(cookie="book_library_token")
         if active_cookie:
             with conn.session as session:
                 session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": active_cookie})
                 session.commit()
             cookie_manager.delete(cookie="book_library_token")
-            
-        try:
-            cookie_manager.delete(cookie="library_access_code")
-        except:
-            pass
-                
-        st.session_state.logged_in = False
-        st.session_state.user_id = None
-        st.session_state.username = None
-        st.session_state.library_config = None
-        st.session_state.editing_book_id = None
+        try: cookie_manager.delete(cookie="library_access_code")
+        except: pass
+        st.session_state.clear()
         st.query_params.clear()
         st.rerun()
         
@@ -398,8 +398,7 @@ with st.sidebar:
                     else:
                         st.error("Incorrect current password.")
 
-
-# ADMIN RECONSTRUCTED EXECUTIVE PANEL
+# --- ADMIN PANEL ---
 if is_admin:
     st.header("🛠️ Admin Management Dashboard")
     admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs([
@@ -411,110 +410,87 @@ if is_admin:
     with admin_tab1:
         st.subheader("Deploy Custom Library Configurations")
         with st.form("admin_deploy_config_form", clear_on_submit=True):
-            lib_name_input = st.text_input("Configurable System / Library Name", placeholder="e.g., User's Library, Book Club Library").strip()
+            lib_name_input = st.text_input("Configurable System / Library Name").strip()
             lib_code_input = st.text_input("Unique Entry Access Code Key").strip()
-            lib_type_input = st.radio("Operational Allocation Mapping Rules Profile Set", ["Singular", "Team"], horizontal=True)
-            max_seats_input = st.number_input("Maximum Allowed Team Members Accounts (Ignored in Singular Mode)", min_value=1, max_value=250, value=5)
-            custom_cats_input = st.text_input("Custom Categories (Comma-separated, leave blank for defaults)", placeholder="Read, Reading, Finished, Wishlist").strip()
-            submit_config = st.form_submit_button("Deploy Library Scope Configuration")
-            if submit_config:
+            lib_type_input = st.radio("Operational Allocation Mapping Rules", ["Singular", "Team"], horizontal=True)
+            max_seats_input = st.number_input("Maximum Allowed Team Members Accounts", min_value=1, max_value=250, value=5)
+            custom_cats_input = st.text_input("Custom Categories (Comma-separated, leave blank for defaults)").strip()
+            if st.form_submit_button("Deploy Library Scope Configuration"):
                 if not lib_name_input or not lib_code_input:
                     st.error("All dynamic parameters are strictly required.")
                 else:
                     try:
-                        current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         resolved_seats = 1 if lib_type_input == "Singular" else int(max_seats_input)
                         with conn.session as session:
                             session.execute(text("""
                                 INSERT INTO library_configurations (library_name, access_code, library_type, max_accounts, custom_categories, created_at)
                                 VALUES (:n, :c, :lt, :ma, :cc, :cat)
-                            """), {"n": lib_name_input, "c": lib_code_input, "lt": lib_type_input, "ma": resolved_seats, "cc": custom_cats_input, "cat": current_ts})
+                            """), {"n": lib_name_input, "c": lib_code_input, "lt": lib_type_input, "ma": resolved_seats, "cc": custom_cats_input, "cat": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                             session.commit()
-                        st.success(f"Configuration deployed! '{lib_code_input}' sets a `{lib_type_input}` setup for '{lib_name_input}'.")
+                        st.success(f"Configuration deployed! '{lib_code_input}' created.")
                         st.rerun()
                     except Exception:
-                        st.error("Failed to deploy layout rules. Verify this code isn't a duplicate registry item.")
+                        st.error("Failed to deploy. Verify this code isn't a duplicate.")
     with admin_tab2:
         st.subheader("Active System Access Codes Registry")
         all_configs_df = conn.query("SELECT id, library_name, access_code, library_type, max_accounts FROM library_configurations ORDER BY id DESC", ttl=0)
         if not all_configs_df.empty:
             for _, cfg_row in all_configs_df.iterrows():
-                cfg_id = int(cfg_row["id"])
-                cfg_name = cfg_row["library_name"]
-                cfg_code = cfg_row["access_code"]
-                cfg_type = cfg_row["library_type"]
-                cfg_max = int(cfg_row["max_accounts"])
+                cfg_id, cfg_name, cfg_code, cfg_type, cfg_max = cfg_row["id"], cfg_row["library_name"], cfg_row["access_code"], cfg_row["library_type"], cfg_row["max_accounts"]
                 member_metrics_df = conn.query("SELECT COUNT(*) as count FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
                 occupied_seats = member_metrics_df.iloc[0]["count"]
                 c_col1, c_col2 = st.columns([3, 1])
                 with c_col1:
-                    st.markdown(f"🔹 Code Key: **{cfg_code}** | Target: `{cfg_name}` | Profile Type: `{cfg_type}` | Active Seat Allocations: `{occupied_seats} / {cfg_max}`")
+                    st.markdown(f"🔹 **{cfg_code}** | Target: `{cfg_name}` | `{cfg_type}` | Active Seats: `{occupied_seats} / {cfg_max}`")
                 with c_col2:
-                    if st.button("Delete Configuration Code", key=f"del_code_{cfg_id}", type="secondary", use_container_width=True):
+                    if st.button("Delete Code", key=f"del_code_{cfg_id}", type="secondary", use_container_width=True):
                         with conn.session as session:
                             session.execute(text("DELETE FROM library_configurations WHERE id=:id"), {"id": cfg_id})
                             session.commit()
-                        st.success(f"Configuration template mapping rule '{cfg_code}' deleted.")
                         st.rerun()
-        else:
-            st.info("No customized setup mappings provisioned yet.")
+        else: st.info("No customized setup mappings provisioned yet.")
     with admin_tab3:
         st.subheader("System Users Overview")
         user_metrics = admin_get_all_users_metrics()
         if user_metrics:
             display_df = pd.DataFrame(user_metrics).drop(columns=["db_id"])
             st.dataframe(display_df, use_container_width=True, hide_index=True)
-            st.write("")
-            st.caption("⚙️ Quick Actions")
             delete_candidates = [u["Username"] for u in user_metrics if u["Username"].lower() != "admin"]
             if delete_candidates:
                 target_username = st.selectbox("Select account to remove:", delete_candidates)
-                if st.button("🚨 Terminate Account", type="secondary", use_container_width=True):
+                if st.button("🚨 Terminate Account", type="secondary"):
                     target_id = next(u["db_id"] for u in user_metrics if u["Username"] == target_username)
                     admin_delete_user_and_library(target_id)
-                    st.success(f"Successfully purged account: {target_username}")
                     st.rerun()
-            else:
-                st.info("No external user accounts currently registered.")
-        else:
-            st.info("No system users found.")
+        else: st.info("No system users found.")
     with admin_tab4:
         st.subheader("Global Library Master Logs")
         all_books = admin_get_all_books()
         if all_books:
             for book_row in all_books:
-                b_id = book_row["book_id"]
-                b_owner = book_row["Owner"]
-                b_title = book_row["Title"]
-                b_cat = book_row["Category"]
+                b_id, b_owner, b_title, b_cat = book_row["book_id"], book_row["Owner"], book_row["Title"], book_row["Category"]
                 b_col1, b_col2 = st.columns([3, 1])
-                with b_col1:
-                    st.markdown(f"📖 **{b_title}** | Category: `{b_cat}` | Owner: `{b_owner}`")
+                with b_col1: st.markdown(f"📖 **{b_title}** | Category: `{b_cat}` | Owner: `{b_owner}`")
                 with b_col2:
-                    if st.button("Purge From Library", key=f"admin_purge_bk_{b_id}", type="secondary", use_container_width=True):
+                    if st.button("Purge Book", key=f"admin_purge_bk_{b_id}", type="secondary"):
                         admin_global_delete_book(b_id)
-                        st.success(f"Successfully removed '{b_title}' platform-wide.")
                         st.rerun()
-        else:
-            st.info("No books recorded platform-wide.")
+        else: st.info("No books recorded platform-wide.")
     st.divider()
 
-# GATEWAY OCCUPANCY THRESHOLD VERIFICATION CODES DECK
+# --- GATEWAY / WORKSPACE VERIFICATION ---
 if st.session_state.library_config is None:
     st.subheader("🔒 Target Access Verification Required")
     st.info("Please enter your venue configuration access code to open your layout tracking panels.")
     with st.form("gateway_verification_code_form"):
         entered_code = st.text_input("Enter Access Code Key").strip()
         remember_code = st.checkbox("Remember this access code")
-        submit_gate = st.form_submit_button("Verify & Mount Storage Scope Layout")
-        if submit_gate:
+        if st.form_submit_button("Verify & Mount Storage Scope Layout"):
             is_first_member = False
             match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
             if not match_df.empty:
                 cfg_id = int(match_df.iloc[0]["id"])
-                cfg_name = match_df.iloc[0]["library_name"]
-                cfg_type = match_df.iloc[0]["library_type"]
-                cfg_max = int(match_df.iloc[0]["max_accounts"])
+                cfg_name, cfg_type, cfg_max = match_df.iloc[0]["library_name"], match_df.iloc[0]["library_type"], int(match_df.iloc[0]["max_accounts"])
                 raw_cats = match_df.iloc[0]["custom_categories"]
                 cfg_cats = [c.strip() for c in raw_cats.split(",") if c.strip()] if raw_cats else DEFAULT_CATEGORIES
                 
@@ -523,82 +499,48 @@ if st.session_state.library_config is None:
                 
                 grant_token_entry = False
                 if is_admin:
-                    # ADMIN BYPASS: Grants entry instantly without joining table
                     grant_token_entry = True
                 elif st.session_state.user_id in registered_member_ids:
                     grant_token_entry = True
                 else:
                     if len(registered_member_ids) >= cfg_max:
-                        if cfg_type == "Singular":
-                            st.error("❌ Access Claim Refused. This singular library space has already been activated.")
-                        else:
-                            st.error(f"❌ Access Claim Refused. This Team container has reached its limit ({cfg_max}/{cfg_max}).")
+                        st.error("❌ Access Claim Refused. This workspace has reached its limit.")
                     else:
                         is_first_member = (len(registered_member_ids) == 0)
                         grant_token_entry = True
-                        current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         with conn.session as session:
-                            session.execute(text("""
-                                INSERT INTO library_memberships (config_id, user_id, joined_at, is_leader)
-                                VALUES (:cid, :uid, :jat, :leader)
-                            """), {
-                                "cid": cfg_id, "uid": st.session_state.user_id, 
-                                "jat": current_ts, "leader": is_first_member
-                            })
+                            session.execute(text("INSERT INTO library_memberships (config_id, user_id, joined_at, is_leader) VALUES (:cid, :uid, :jat, :leader)"), 
+                                            {"cid": cfg_id, "uid": st.session_state.user_id, "jat": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "leader": is_first_member})
                             session.commit()
+                
                 if grant_token_entry:
-                    st.session_state.library_config = {
-                        "name": cfg_name,
-                        "access_code": entered_code,
-                        "type": cfg_type,
-                        "max_accounts": cfg_max,
-                        "categories": cfg_cats
-                    }
-                    if remember_code:
-                        cookie_manager.set(cookie="library_access_code", val=entered_code, expires_at=datetime.now() + pd.Timedelta(days=30))
-                    st.success(f"Access granted! Welcome, {'Team Leader' if is_first_member else 'Member'}.")
+                    st.session_state.library_config = {"name": cfg_name, "access_code": entered_code, "type": cfg_type, "max_accounts": cfg_max, "categories": cfg_cats}
+                    if remember_code: cookie_manager.set(cookie="library_access_code", val=entered_code, expires_at=datetime.now() + pd.Timedelta(days=30))
+                    st.success("Access granted!")
                     st.rerun()
-            else:
-                st.error("Invalid configuration key parameters.")
+            else: st.error("Invalid configuration key.")
     st.stop()
 
-# RUNTIME CORE APPLICATION PANELS
-match_df = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", 
-                      params={"ac": st.session_state.library_config['access_code']}, ttl=0)
+# --- RUNTIME CORE APPLICATION ---
+match_df = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", params={"ac": st.session_state.library_config['access_code']}, ttl=0)
 cfg_id = int(match_df.iloc[0]["id"])
-
 books_list = load_books_from_db(cfg_id, is_admin)
 current_categories = st.session_state.library_config.get("categories", DEFAULT_CATEGORIES)
 
 st.header(f"{dynamic_icon} Workspace: {st.session_state.library_config['name']}")
 
-# Fetch leadership status
-leader_query = "SELECT is_leader FROM library_memberships WHERE user_id = :uid AND config_id = :cid"
-leader_df = conn.query(leader_query, params={"uid": st.session_state.user_id, "cid": cfg_id}, ttl=0)
-is_leader = False
-if not leader_df.empty:
-    is_leader = leader_df.iloc[0]["is_leader"]
-
-# Check other members in this library configuration
-members_query = """
-    SELECT u.id, u.username, lm.is_leader 
-    FROM library_memberships lm 
-    JOIN users u ON lm.user_id = u.id 
-    WHERE lm.config_id = :cid
-"""
-members_df = conn.query(members_query, params={"cid": cfg_id}, ttl=0)
+leader_df = conn.query("SELECT is_leader FROM library_memberships WHERE user_id = :uid AND config_id = :cid", params={"uid": st.session_state.user_id, "cid": cfg_id}, ttl=0)
+is_leader = leader_df.iloc[0]["is_leader"] if not leader_df.empty else False
+members_df = conn.query("SELECT u.id, u.username, lm.is_leader FROM library_memberships lm JOIN users u ON lm.user_id = u.id WHERE lm.config_id = :cid", params={"cid": cfg_id}, ttl=0)
 
 with st.sidebar:
     st.divider()
     st.header("Workspace Tools")
-    
     with st.expander("👥 View Everyone in Library"):
         if not members_df.empty:
             for _, m in members_df.iterrows():
-                role = "👑 Leader" if m["is_leader"] else "👤 Member"
-                st.markdown(f"- **{m['username']}** ({role})")
-        else:
-            st.info("No members recorded.")
+                st.markdown(f"- **{m['username']}** ({'👑 Leader' if m['is_leader'] else '👤 Member'})")
+        else: st.info("No members recorded.")
 
     st.divider()
     st.header("Add a Book")
@@ -607,21 +549,16 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload book photo", type=["png", "jpg", "jpeg"], key="add_photo")
 
     if st.button("Add Book", use_container_width=True):
-        if title.strip() == "":
-            st.error("Please enter a book title.")
+        if title.strip() == "": st.error("Please enter a book title.")
         else:
-            image_bytes = uploaded_file.getvalue() if uploaded_file else None
-            image_name = uploaded_file.name if uploaded_file else None
-            add_book_to_db(cfg_id, st.session_state.user_id, title.strip(), category, image_bytes, image_name)
+            add_book_to_db(cfg_id, st.session_state.user_id, title.strip(), category, uploaded_file.getvalue() if uploaded_file else None, uploaded_file.name if uploaded_file else None)
             st.success(f"Added: {title}")
             st.rerun()
 
-    # Leadership Transfer & Leave Options for Teams
     if st.session_state.library_config["type"] == "Team" and not is_admin:
         st.divider()
         st.subheader("🚪 Exit Library Scope")
         other_members = members_df[members_df["id"] != st.session_state.user_id]
-        
         if is_leader and not other_members.empty:
             st.warning("⚠️ You are the Leader. Select a new leader before leaving.")
             chosen_new_leader = st.selectbox("Transfer Leadership To:", other_members["username"].tolist())
@@ -632,11 +569,8 @@ with st.sidebar:
                     session.execute(text("DELETE FROM library_memberships WHERE config_id = :cid AND user_id = :uid"), {"cid": cfg_id, "uid": st.session_state.user_id})
                     session.commit()
                 st.session_state.library_config = None
-                try:
-                    cookie_manager.delete(cookie="library_access_code")
-                except:
-                    pass
-                st.success("Leadership transferred and left library successfully.")
+                try: cookie_manager.delete(cookie="library_access_code")
+                except: pass
                 st.rerun()
         else:
             if st.button("Leave Library", type="secondary", use_container_width=True):
@@ -644,39 +578,27 @@ with st.sidebar:
                     session.execute(text("DELETE FROM library_memberships WHERE config_id = :cid AND user_id = :uid"), {"cid": cfg_id, "uid": st.session_state.user_id})
                     session.commit()
                 st.session_state.library_config = None
-                try:
-                    cookie_manager.delete(cookie="library_access_code")
-                except:
-                    pass
-                st.success("Successfully left library.")
+                try: cookie_manager.delete(cookie="library_access_code")
+                except: pass
                 st.rerun()
 
     if books_list:
         st.divider()
         st.subheader("⚠️ Danger Zone")
-        confirm_delete = st.checkbox("I want to clear my books in this library")
-        if st.button("Delete My Books", type="primary", use_container_width=True, disabled=not confirm_delete):
+        if st.button("Delete My Books", type="primary", use_container_width=True, disabled=not st.checkbox("I want to clear my books in this library")):
             delete_all_books_from_db(cfg_id, st.session_state.user_id)
-            st.success("Your books in this library have been cleared.")
             st.rerun()
 
 col1, col2 = st.columns([2, 1])
-
 with col1:
     st.subheader("Library Books")
     if books_list:
-        df_display = pd.DataFrame([{"Title": b["title"], "Category": b["category"], "Owner": b["username"], "Has Photo": "Yes" if b["image_bytes"] else "No"} for b in books_list])
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-    else:
-        st.info("No books added to this library scope yet.")
-
+        st.dataframe(pd.DataFrame([{"Title": b["title"], "Category": b["category"], "Owner": b["username"], "Has Photo": "Yes" if b["image_bytes"] else "No"} for b in books_list]), use_container_width=True, hide_index=True)
+    else: st.info("No books added to this library scope yet.")
 with col2:
     st.subheader("Category Summary")
-    if books_list:
-        counts = pd.DataFrame(books_list)["category"].value_counts().reindex(current_categories, fill_value=0)
-        st.bar_chart(counts)
-    else:
-        st.write("Add books to see the summary.")
+    if books_list: st.bar_chart(pd.DataFrame(books_list)["category"].value_counts().reindex(current_categories, fill_value=0))
+    else: st.write("Add books to see the summary.")
 
 st.divider()
 st.subheader("Book Gallery")
@@ -685,30 +607,22 @@ if books_list:
     gallery_cols = st.columns(3)
     for i, book in enumerate(books_list):
         with gallery_cols[i % 3]:
-            can_modify = is_admin or is_leader or (book["user_id"] == st.session_state.user_id) if "user_id" in book else is_admin
+            can_modify = is_admin or is_leader or (book["user_id"] == st.session_state.user_id)
             if st.session_state.editing_book_id == book["id"]:
                 st.markdown(f"#### 📝 Edit Details")
                 with st.form(f"edit_form_{book['id']}", clear_on_submit=True):
                     edit_title = st.text_input("Book Title", value=book["title"])
-                    default_idx = current_categories.index(book["category"]) if book["category"] in current_categories else 0
-                    edit_category = st.selectbox("Category", current_categories, index=default_idx)
-                    edit_file = st.file_uploader("Replace Book Photo (Optional)", type=["png", "jpg", "jpeg"])
+                    edit_category = st.selectbox("Category", current_categories, index=current_categories.index(book["category"]) if book["category"] in current_categories else 0)
+                    edit_file = st.file_uploader("Replace Book Photo", type=["png", "jpg", "jpeg"])
                     
                     btn_save, btn_cancel = st.columns(2)
-                    with btn_save:
-                        save_changes = st.form_submit_button("Save", use_container_width=True)
-                    with btn_cancel:
-                        cancel_changes = st.form_submit_button("Cancel", use_container_width=True)
+                    with btn_save: save_changes = st.form_submit_button("Save", use_container_width=True)
+                    with btn_cancel: cancel_changes = st.form_submit_button("Cancel", use_container_width=True)
                     
-                    if save_changes:
-                        if edit_title.strip() == "":
-                            st.error("Title cannot be blank.")
-                        else:
-                            img_bytes = edit_file.getvalue() if edit_file else None
-                            img_name = edit_file.name if edit_file else None
-                            update_book_in_db(book["id"], st.session_state.user_id, edit_title.strip(), edit_category, img_bytes, img_name)
-                            st.session_state.editing_book_id = None
-                            st.rerun()
+                    if save_changes and edit_title.strip() != "":
+                        update_book_in_db(book["id"], st.session_state.user_id, edit_title.strip(), edit_category, edit_file.getvalue() if edit_file else None, edit_file.name if edit_file else None)
+                        st.session_state.editing_book_id = None
+                        st.rerun()
                     if cancel_changes:
                         st.session_state.editing_book_id = None
                         st.rerun()
@@ -716,12 +630,9 @@ if books_list:
                 st.markdown(f"**{book['title']}**")
                 st.caption(f"Category: {book['category']} | Owner: {book['username']}")
                 if book["image_bytes"]:
-                    try:
-                        st.image(Image.open(io.BytesIO(bytes(book["image_bytes"]))), use_container_width=True)
-                    except Exception:
-                        st.caption("⚠️ [Image Display Error]")
-                else:
-                    st.write("No photo uploaded.")
+                    try: st.image(Image.open(io.BytesIO(bytes(book["image_bytes"]))), use_container_width=True)
+                    except: st.caption("⚠️ [Image Error]")
+                else: st.write("No photo uploaded.")
             
             action_edit, action_del = st.columns(2)
             if can_modify:
@@ -732,7 +643,5 @@ if books_list:
                 with action_del:
                     if st.button(f"🗑️ Delete", key=f"del_{book['id']}", use_container_width=True):
                         delete_book_from_db(book["id"], st.session_state.user_id)
-                        st.success(f"Deleted '{book['title']}'")
                         st.rerun()
-else:
-    st.write("Upload some books to display them here.")
+else: st.write("Upload some books to display them here.")
