@@ -288,12 +288,12 @@ if not st.session_state.logged_in:
     else:
         st.subheader("Please Login or Register to access your collection")
         
-    auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
+    # The key=auth_radio and on_change=st.rerun wipe the form when toggled
+    auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True, key="auth_radio", on_change=st.rerun)
     
-    # FIX: Added clear_on_submit=True right here
     with st.form("auth_form", clear_on_submit=True):
-        username = st.text_input("Username").strip()
-        password = st.text_input("Password", type="password")
+        username = st.text_input("Username", key="auth_username").strip()
+        password = st.text_input("Password", type="password", key="auth_password")
         remember_me = False
         if auth_mode == "Login":
             remember_me = st.checkbox("Keep me logged in")
@@ -349,15 +349,20 @@ with st.sidebar:
         st.subheader("Account Vault")
         
         vault_users = list(st.session_state.account_vault.keys())
-        current_idx = vault_users.index(st.session_state.username)
-        switch_to = st.selectbox("Switch Account", vault_users, index=current_idx)
         
+        if st.session_state.username in vault_users:
+            current_idx = vault_users.index(st.session_state.username)
+        else:
+            current_idx = 0
+            
+        switch_to = st.selectbox("Switch Account", vault_users, index=current_idx)
         if switch_to != st.session_state.username:
-            if st.button("Apply Switch", use_container_width=True):
-                st.session_state.username = switch_to
-                st.session_state.user_id = st.session_state.account_vault[switch_to]
-                st.session_state.library_config = None 
-                st.rerun()
+            st.session_state.username = switch_to
+            st.session_state.user_id = st.session_state.account_vault[switch_to]
+            st.session_state.library_config = None
+            try: cookie_manager.delete(cookie="library_access_code")
+            except: pass
+            st.rerun()
 
         st.caption("Remove account from vault:")
         for user in vault_users:
@@ -369,6 +374,12 @@ with st.sidebar:
     if st.button("➕ Add Another Account", use_container_width=True):
         st.session_state.adding_new_account = True
         st.session_state.logged_in = False
+        st.session_state.library_config = None
+        # Explicit memory wipe
+        if "auth_username" in st.session_state: del st.session_state["auth_username"]
+        if "auth_password" in st.session_state: del st.session_state["auth_password"]
+        try: cookie_manager.delete(cookie="library_access_code")
+        except: pass
         st.rerun()
 
     st.divider()
