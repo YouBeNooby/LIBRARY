@@ -15,6 +15,7 @@ if "user_id" not in st.session_state: st.session_state.user_id = None
 if "editing_book_id" not in st.session_state: st.session_state.editing_book_id = None
 if "library_config" not in st.session_state: st.session_state.library_config = None
 if "account_vault" not in st.session_state: st.session_state.account_vault = {}
+if "adding_new_account" not in st.session_state: st.session_state.adding_new_account = False
 
 conn = st.connection("postgresql", type="sql")
 cookie_manager = stx.CookieManager()
@@ -26,10 +27,8 @@ if st.session_state.logged_in and st.session_state.library_config is not None:
     check_active_df = conn.query("SELECT library_name, library_type, max_accounts, custom_categories FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
     if check_active_df.empty:
         st.session_state.library_config = None
-        try:
-            cookie_manager.delete(cookie="library_access_code")
-        except Exception:
-            pass
+        try: cookie_manager.delete(cookie="library_access_code")
+        except Exception: pass
         st.warning("⚠️ The active session configuration access code was deleted by an administrator.")
     else:
         st.session_state.library_config["name"] = check_active_df.iloc[0]["library_name"]
@@ -253,7 +252,8 @@ def admin_delete_user_and_library(target_user_id):
 init_db()
 
 # --- AUTO-LOGIN / COOKIE LOGIC ---
-if not st.session_state.logged_in:
+# Notice we check if we are currently trying to add a NEW account to skip this
+if not st.session_state.logged_in and not st.session_state.adding_new_account:
     cookie_token = cookie_manager.get(cookie="book_library_token")
     if cookie_token:
         token_check = conn.query("SELECT user_id, username FROM user_sessions WHERE token = :t", params={"t": cookie_token}, ttl=0)
@@ -283,8 +283,14 @@ if st.session_state.logged_in and st.session_state.library_config is None:
 # --- AUTHENTICATION & VAULT UI ---
 if not st.session_state.logged_in:
     st.title("📚 Book Library")
-    st.subheader("Please Login or Register to access your collection")
+    
+    if st.session_state.adding_new_account:
+        st.subheader("Add an Account to your Vault")
+    else:
+        st.subheader("Please Login or Register to access your collection")
+        
     auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True)
+    
     with st.form("auth_form"):
         username = st.text_input("Username").strip()
         password = st.text_input("Password", type="password")
@@ -304,10 +310,14 @@ if not st.session_state.logged_in:
             elif auth_mode == "Login":
                 user_record = login_user(username, password)
                 if user_record:
+                    # Reset the adding new account flag
+                    st.session_state.adding_new_account = False
+                    # Add to vault and log in
                     st.session_state.account_vault[username] = user_record[0]
                     st.session_state.logged_in = True
                     st.session_state.user_id = user_record[0]
                     st.session_state.username = username
+                    
                     if remember_me:
                         secure_token = secrets.token_urlsafe(32)
                         current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -319,6 +329,14 @@ if not st.session_state.logged_in:
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
+                    
+    # Escape hatch in case they change their mind about adding an account
+    if st.session_state.adding_new_account:
+        if st.button("Cancel & Return to Vault", use_container_width=True):
+            st.session_state.adding_new_account = False
+            st.session_state.logged_in = True
+            st.rerun()
+            
     st.stop()
 
 is_admin = st.session_state.username.lower() == "admin"
@@ -352,6 +370,7 @@ with st.sidebar:
                     st.rerun()
 
     if st.button("➕ Add Another Account", use_container_width=True):
+        st.session_state.adding_new_account = True
         st.session_state.logged_in = False
         st.rerun()
 
