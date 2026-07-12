@@ -65,7 +65,6 @@ def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def init_db():
-    # 1. Safely create the base tables first
     with conn.session as session:
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
@@ -88,7 +87,6 @@ def init_db():
         """))
         session.commit()
 
-    # 2. ISOLATED: Try to add the new category column in its own bubble
     try:
         with conn.session as session:
             session.execute(text("ALTER TABLE library_configurations ADD COLUMN IF NOT EXISTS category_mode TEXT DEFAULT 'Default Only'"))
@@ -96,7 +94,6 @@ def init_db():
     except Exception:
         pass
 
-    # 3. Safely create the remaining tables
     with conn.session as session:
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS library_memberships (
@@ -141,53 +138,38 @@ def add_user(username, password):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with conn.session as session:
-            session.execute(text("""
-                INSERT INTO users (username, password, registration_date) 
-                VALUES (:u, :p, :r)
-            """), {"u": username, "p": make_hashes(password), "r": current_time})
+            session.execute(text("INSERT INTO users (username, password, registration_date) VALUES (:u, :p, :r)"), 
+                            {"u": username, "p": make_hashes(password), "r": current_time})
             session.commit()
         return True
     except Exception:
         return False
 
 def login_user(username, password):
-    df = conn.query(
-        "SELECT id, username FROM users WHERE username = :u AND password = :p",
-        params={"u": username, "p": make_hashes(password)},
-        ttl=0
-    )
+    df = conn.query("SELECT id, username FROM users WHERE username = :u AND password = :p", params={"u": username, "p": make_hashes(password)}, ttl=0)
     if not df.empty:
         return (int(df.iloc[0]["id"]), df.iloc[0]["username"])
     return None
 
 def update_user_password(user_id, new_password):
     with conn.session as session:
-        session.execute(text("UPDATE users SET password = :p WHERE id = :id"), 
-                        {"p": make_hashes(new_password), "id": user_id})
+        session.execute(text("UPDATE users SET password = :p WHERE id = :id"), {"p": make_hashes(new_password), "id": user_id})
         session.commit()
 
 def add_book_to_db(config_id, user_id, title, category, image_bytes, image_name):
     with conn.session as session:
-        session.execute(text("""
-            INSERT INTO books (config_id, user_id, title, category, image_bytes, image_name)
-            VALUES (:cid, :uid, :t, :c, :img, :name)
-        """), {"cid": config_id, "uid": user_id, "t": title, "c": category, "img": image_bytes, "name": image_name})
+        session.execute(text("INSERT INTO books (config_id, user_id, title, category, image_bytes, image_name) VALUES (:cid, :uid, :t, :c, :img, :name)"), 
+                        {"cid": config_id, "uid": user_id, "t": title, "c": category, "img": image_bytes, "name": image_name})
         session.commit()
 
 def update_book_in_db(book_id, user_id, title, category, image_bytes=None, image_name=None):
     with conn.session as session:
         if image_bytes:
-            session.execute(text("""
-                UPDATE books 
-                SET title = :t, category = :c, image_bytes = :img, image_name = :name
-                WHERE id = :bid AND user_id = :uid
-            """), {"t": title, "c": category, "img": image_bytes, "name": image_name, "bid": book_id, "uid": user_id})
+            session.execute(text("UPDATE books SET title = :t, category = :c, image_bytes = :img, image_name = :name WHERE id = :bid AND user_id = :uid"), 
+                            {"t": title, "c": category, "img": image_bytes, "name": image_name, "bid": book_id, "uid": user_id})
         else:
-            session.execute(text("""
-                UPDATE books 
-                SET title = :t, category = :c
-                WHERE id = :bid AND user_id = :uid
-            """), {"t": title, "c": category, "bid": book_id, "uid": user_id})
+            session.execute(text("UPDATE books SET title = :t, category = :c WHERE id = :bid AND user_id = :uid"), 
+                            {"t": title, "c": category, "bid": book_id, "uid": user_id})
         session.commit()
 
 def delete_book_from_db(book_id, user_id):
@@ -208,37 +190,18 @@ def delete_all_books_from_db(config_id, user_id):
 def load_books_from_db(config_id, is_admin):
     with conn.session as session:
         if is_admin:
-            query = """
-                SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
-                FROM books b
-                JOIN users u ON b.user_id = u.id
-                WHERE b.config_id = :cid
-                ORDER BY b.id ASC
-            """
+            query = "SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username FROM books b JOIN users u ON b.user_id = u.id WHERE b.config_id = :cid ORDER BY b.id ASC"
             result = session.execute(text(query), {"cid": config_id})
         else:
-            query = """
-                SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username
-                FROM books b
-                JOIN library_memberships lm ON b.user_id = lm.user_id AND b.config_id = lm.config_id
-                JOIN users u ON b.user_id = u.id
-                WHERE b.config_id = :cid
-                ORDER BY b.id ASC
-            """
+            query = "SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username FROM books b JOIN library_memberships lm ON b.user_id = lm.user_id AND b.config_id = lm.config_id JOIN users u ON b.user_id = u.id WHERE b.config_id = :cid ORDER BY b.id ASC"
             result = session.execute(text(query), {"cid": config_id})
         return [dict(row) for row in result.mappings()]
 
 def admin_get_all_users_metrics():
     query = """
-        SELECT 
-            users.id AS db_id, 
-            users.username AS "Username", 
-            users.registration_date,
-            COUNT(books.id) AS "Books Tracked"
-        FROM users
-        LEFT JOIN books ON users.id = books.user_id
-        GROUP BY users.id, users.username, users.registration_date
-        ORDER BY users.registration_date ASC
+        SELECT users.id AS db_id, users.username AS "Username", users.registration_date, COUNT(books.id) AS "Books Tracked"
+        FROM users LEFT JOIN books ON users.id = books.user_id
+        GROUP BY users.id, users.username, users.registration_date ORDER BY users.registration_date ASC
     """
     df = conn.query(query, ttl=0)
     if df.empty: return []
@@ -247,16 +210,7 @@ def admin_get_all_users_metrics():
     return df.to_dict(orient="records")
 
 def admin_get_all_books():
-    query = """
-        SELECT 
-            books.id AS book_id,
-            users.username AS "Owner", 
-            books.title AS "Title", 
-            books.category AS "Category"
-        FROM books
-        JOIN users ON books.user_id = users.id
-        ORDER BY books.id ASC
-    """
+    query = "SELECT books.id AS book_id, users.username AS \"Owner\", books.title AS \"Title\", books.category AS \"Category\" FROM books JOIN users ON books.user_id = users.id ORDER BY books.id ASC"
     df = conn.query(query, ttl=0)
     return df.to_dict(orient="records")
 
@@ -273,18 +227,23 @@ def admin_delete_user_and_library(target_user_id):
             session.rollback()
             st.error(f"Failed to delete user: {e}")
 
-# --- AUTO-LOGIN / COOKIE LOGIC ---
+# --- MULTI-VAULT COOKIE LOGIC ---
 if not st.session_state.logged_in and not st.session_state.adding_new_account:
-    cookie_token = cookie_manager.get(cookie="book_library_token")
-    if cookie_token:
-        token_check = conn.query("SELECT user_id, username FROM user_sessions WHERE token = :t", params={"t": cookie_token}, ttl=0)
-        if not token_check.empty:
-            username = token_check.iloc[0]["username"]
-            user_id = int(token_check.iloc[0]["user_id"])
+    vault_cookie = cookie_manager.get(cookie="library_vault_tokens")
+    if vault_cookie:
+        tokens = vault_cookie.split(",")
+        for t in tokens:
+            if not t.strip(): continue
+            token_check = conn.query("SELECT user_id, username FROM user_sessions WHERE token = :t", params={"t": t.strip()}, ttl=0)
+            if not token_check.empty:
+                st.session_state.account_vault[token_check.iloc[0]["username"]] = int(token_check.iloc[0]["user_id"])
+        
+        # If we successfully loaded accounts from the cookie, log in as the first one found
+        if st.session_state.account_vault:
             st.session_state.logged_in = True
-            st.session_state.user_id = user_id
-            st.session_state.username = username
-            st.session_state.account_vault[username] = user_id
+            first_user = list(st.session_state.account_vault.keys())[0]
+            st.session_state.username = first_user
+            st.session_state.user_id = st.session_state.account_vault[first_user]
 
 if st.session_state.logged_in and st.session_state.library_config is None:
     saved_code = cookie_manager.get(cookie="library_access_code")
@@ -342,7 +301,15 @@ if not st.session_state.logged_in:
                             session.execute(text("INSERT INTO user_sessions (token, user_id, username, created_at) VALUES (:t, :uid, :u, :c)"), 
                                             {"t": secure_token, "uid": user_record[0], "u": username, "c": current_ts})
                             session.commit()
-                        cookie_manager.set(cookie="book_library_token", val=secure_token, expires_at=datetime.now() + pd.Timedelta(days=30))
+                        
+                        # Add new token to the existing multi-token list
+                        existing_cookie = cookie_manager.get(cookie="library_vault_tokens")
+                        if existing_cookie:
+                            new_cookie_val = f"{existing_cookie},{secure_token}"
+                        else:
+                            new_cookie_val = secure_token
+                            
+                        cookie_manager.set(cookie="library_vault_tokens", val=new_cookie_val, expires_at=datetime.now() + pd.Timedelta(days=30))
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -405,12 +372,15 @@ with st.sidebar:
             st.rerun()
             
     if st.button("Log Out Entire Session", type="primary", use_container_width=True):
-        active_cookie = cookie_manager.get(cookie="book_library_token")
-        if active_cookie:
+        vault_cookie = cookie_manager.get(cookie="library_vault_tokens")
+        if vault_cookie:
+            tokens = vault_cookie.split(",")
             with conn.session as session:
-                session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": active_cookie})
+                for t in tokens:
+                    if t.strip():
+                        session.execute(text("DELETE FROM user_sessions WHERE token = :t"), {"t": t.strip()})
                 session.commit()
-            cookie_manager.delete(cookie="book_library_token")
+            cookie_manager.delete(cookie="library_vault_tokens")
         try: cookie_manager.delete(cookie="library_access_code")
         except: pass
         st.session_state.clear()
