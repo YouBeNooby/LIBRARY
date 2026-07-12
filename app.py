@@ -21,19 +21,10 @@ conn = st.connection("postgresql", type="sql")
 cookie_manager = stx.CookieManager()
 DEFAULT_CATEGORIES = ["Read pending", "Reading in progress", "Already read", "Read again", "Give away", "Wishlist"]
 
-# Helper to calculate final categories based on mode
-def compute_categories(mode, raw_custom):
-    custom_list = [c.strip() for c in raw_custom.split(",") if c.strip()] if raw_custom else []
-    if mode == "Custom Only" and custom_list:
-        return custom_list
-    elif mode == "Default + Custom":
-        return DEFAULT_CATEGORIES + custom_list
-    return DEFAULT_CATEGORIES  # Fallback to default
-
 # ACTIVE KICK-OUT TRANS-GUARD SYSTEM
 if st.session_state.logged_in and st.session_state.library_config is not None:
     active_code = st.session_state.library_config.get("access_code")
-    check_active_df = conn.query("SELECT library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
+    check_active_df = conn.query("SELECT library_name, library_type, max_accounts, custom_categories FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
     if check_active_df.empty:
         st.session_state.library_config = None
         try: cookie_manager.delete(cookie="library_access_code")
@@ -43,10 +34,11 @@ if st.session_state.logged_in and st.session_state.library_config is not None:
         st.session_state.library_config["name"] = check_active_df.iloc[0]["library_name"]
         st.session_state.library_config["type"] = check_active_df.iloc[0]["library_type"]
         st.session_state.library_config["max_accounts"] = int(check_active_df.iloc[0]["max_accounts"])
-        st.session_state.library_config["categories"] = compute_categories(
-            check_active_df.iloc[0]["category_mode"], 
-            check_active_df.iloc[0]["custom_categories"]
-        )
+        raw_cats = check_active_df.iloc[0]["custom_categories"]
+        if raw_cats:
+            st.session_state.library_config["categories"] = [c.strip() for c in raw_cats.split(",") if c.strip()]
+        else:
+            st.session_state.library_config["categories"] = DEFAULT_CATEGORIES
 
 dynamic_title = "Book Library"
 dynamic_icon = "📚"
@@ -60,11 +52,10 @@ elif st.session_state.username == "admin":
 
 st.set_page_config(page_title=dynamic_title, page_icon=dynamic_icon, layout="wide")
 
-# --- DATABASE SETUP (CACHED FOR SPEED) ---
+# --- DATABASE HELPERS ---
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-@st.cache_resource
 def init_db():
     with conn.session as session:
         session.execute(text("""
@@ -83,16 +74,9 @@ def init_db():
                 library_type TEXT NOT NULL DEFAULT 'Singular',
                 max_accounts INTEGER NOT NULL DEFAULT 1,
                 custom_categories TEXT,
-                category_mode TEXT DEFAULT 'Default Only',
                 created_at TEXT NOT NULL
             )
         """))
-        # Ensure category_mode exists for older databases
-        try:
-            session.execute(text("ALTER TABLE library_configurations ADD COLUMN IF NOT EXISTS category_mode TEXT DEFAULT 'Default Only'"))
-        except Exception:
-            pass
-            
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS library_memberships (
                 id SERIAL PRIMARY KEY,
@@ -129,9 +113,6 @@ def init_db():
         """))
         session.commit()
 
-init_db()
-
-# --- DATABASE FUNCTIONS ---
 def add_user(username, password):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -268,6 +249,8 @@ def admin_delete_user_and_library(target_user_id):
             session.rollback()
             st.error(f"Failed to delete user: {e}")
 
+init_db()
+
 # --- AUTO-LOGIN / COOKIE LOGIC ---
 if not st.session_state.logged_in and not st.session_state.adding_new_account:
     cookie_token = cookie_manager.get(cookie="book_library_token")
@@ -284,14 +267,16 @@ if not st.session_state.logged_in and not st.session_state.adding_new_account:
 if st.session_state.logged_in and st.session_state.library_config is None:
     saved_code = cookie_manager.get(cookie="library_access_code")
     if saved_code:
-        match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": saved_code}, ttl=0)
+        match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories FROM library_configurations WHERE access_code=:ac", params={"ac": saved_code}, ttl=0)
         if not match_df.empty:
+            raw_cats = match_df.iloc[0]["custom_categories"]
+            cats = [c.strip() for c in raw_cats.split(",") if c.strip()] if raw_cats else DEFAULT_CATEGORIES
             st.session_state.library_config = {
                 "name": match_df.iloc[0]["library_name"],
                 "access_code": saved_code,
                 "type": match_df.iloc[0]["library_type"],
                 "max_accounts": int(match_df.iloc[0]["max_accounts"]),
-                "categories": compute_categories(match_df.iloc[0]["category_mode"], match_df.iloc[0]["custom_categories"])
+                "categories": cats
             }
 
 # --- AUTHENTICATION & VAULT UI ---
@@ -303,6 +288,7 @@ if not st.session_state.logged_in:
     else:
         st.subheader("Please Login or Register to access your collection")
         
+    # The key=auth_radio and on_change=st.rerun wipe the form when toggled
     auth_mode = st.radio("Choose Action", ["Login", "Register"], horizontal=True, key="auth_radio", on_change=st.rerun)
     
     with st.form("auth_form", clear_on_submit=True):
@@ -361,8 +347,13 @@ with st.sidebar:
     if len(st.session_state.account_vault) > 1:
         st.divider()
         st.subheader("Account Vault")
+        
         vault_users = list(st.session_state.account_vault.keys())
-        current_idx = vault_users.index(st.session_state.username) if st.session_state.username in vault_users else 0
+        
+        if st.session_state.username in vault_users:
+            current_idx = vault_users.index(st.session_state.username)
+        else:
+            current_idx = 0
             
         switch_to = st.selectbox("Switch Account", vault_users, index=current_idx)
         if switch_to != st.session_state.username:
@@ -384,6 +375,7 @@ with st.sidebar:
         st.session_state.adding_new_account = True
         st.session_state.logged_in = False
         st.session_state.library_config = None
+        # Explicit memory wipe
         if "auth_username" in st.session_state: del st.session_state["auth_username"]
         if "auth_password" in st.session_state: del st.session_state["auth_password"]
         try: cookie_manager.delete(cookie="library_access_code")
@@ -447,33 +439,20 @@ if is_admin:
         with st.form("admin_deploy_config_form", clear_on_submit=True):
             lib_name_input = st.text_input("Configurable System / Library Name").strip()
             lib_code_input = st.text_input("Unique Entry Access Code Key").strip()
-            
-            col_a, col_b = st.columns(2)
-            with col_a:
-                lib_type_input = st.radio("Allocation Rules", ["Singular", "Team"], horizontal=True)
-            with col_b:
-                cat_mode_input = st.radio("Category Mode", ["Default Only", "Custom Only", "Default + Custom"], horizontal=True)
-                
+            lib_type_input = st.radio("Operational Allocation Mapping Rules", ["Singular", "Team"], horizontal=True)
             max_seats_input = st.number_input("Maximum Allowed Team Members Accounts", min_value=1, max_value=250, value=5)
-            custom_cats_input = st.text_input("Custom Categories (Comma-separated)").strip()
-            
+            custom_cats_input = st.text_input("Custom Categories (Comma-separated, leave blank for defaults)").strip()
             if st.form_submit_button("Deploy Library Scope Configuration"):
                 if not lib_name_input or not lib_code_input:
-                    st.error("System Name and Access Code are strictly required.")
-                elif cat_mode_input in ["Custom Only", "Default + Custom"] and not custom_cats_input:
-                    st.error("You must provide Custom Categories for the selected mode.")
+                    st.error("All dynamic parameters are strictly required.")
                 else:
                     try:
                         resolved_seats = 1 if lib_type_input == "Singular" else int(max_seats_input)
                         with conn.session as session:
                             session.execute(text("""
-                                INSERT INTO library_configurations 
-                                (library_name, access_code, library_type, max_accounts, custom_categories, category_mode, created_at)
-                                VALUES (:n, :c, :lt, :ma, :cc, :cm, :cat)
-                            """), {
-                                "n": lib_name_input, "c": lib_code_input, "lt": lib_type_input, "ma": resolved_seats, 
-                                "cc": custom_cats_input, "cm": cat_mode_input, "cat": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            })
+                                INSERT INTO library_configurations (library_name, access_code, library_type, max_accounts, custom_categories, created_at)
+                                VALUES (:n, :c, :lt, :ma, :cc, :cat)
+                            """), {"n": lib_name_input, "c": lib_code_input, "lt": lib_type_input, "ma": resolved_seats, "cc": custom_cats_input, "cat": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                             session.commit()
                         st.success(f"Configuration deployed! '{lib_code_input}' created.")
                         st.rerun()
@@ -481,15 +460,15 @@ if is_admin:
                         st.error("Failed to deploy. Verify this code isn't a duplicate.")
     with admin_tab2:
         st.subheader("Active System Access Codes Registry")
-        all_configs_df = conn.query("SELECT id, library_name, access_code, library_type, max_accounts, category_mode FROM library_configurations ORDER BY id DESC", ttl=0)
+        all_configs_df = conn.query("SELECT id, library_name, access_code, library_type, max_accounts FROM library_configurations ORDER BY id DESC", ttl=0)
         if not all_configs_df.empty:
             for _, cfg_row in all_configs_df.iterrows():
-                cfg_id, cfg_name, cfg_code, cfg_type, cfg_max, cfg_cat_mode = cfg_row["id"], cfg_row["library_name"], cfg_row["access_code"], cfg_row["library_type"], cfg_row["max_accounts"], cfg_row["category_mode"]
+                cfg_id, cfg_name, cfg_code, cfg_type, cfg_max = cfg_row["id"], cfg_row["library_name"], cfg_row["access_code"], cfg_row["library_type"], cfg_row["max_accounts"]
                 member_metrics_df = conn.query("SELECT COUNT(*) as count FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
                 occupied_seats = member_metrics_df.iloc[0]["count"]
-                c_col1, c_col2 = st.columns([4, 1])
+                c_col1, c_col2 = st.columns([3, 1])
                 with c_col1:
-                    st.markdown(f"🔹 **{cfg_code}** | `{cfg_name}` | Type: `{cfg_type}` | Categories: `{cfg_cat_mode}` | Seats: `{occupied_seats} / {cfg_max}`")
+                    st.markdown(f"🔹 **{cfg_code}** | Target: `{cfg_name}` | `{cfg_type}` | Active Seats: `{occupied_seats} / {cfg_max}`")
                 with c_col2:
                     if st.button("Delete Code", key=f"del_code_{cfg_id}", type="secondary", use_container_width=True):
                         with conn.session as session:
@@ -535,12 +514,12 @@ if st.session_state.library_config is None:
         remember_code = st.checkbox("Remember this access code")
         if st.form_submit_button("Verify & Mount Storage Scope Layout"):
             is_first_member = False
-            match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+            match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
             if not match_df.empty:
                 cfg_id = int(match_df.iloc[0]["id"])
                 cfg_name, cfg_type, cfg_max = match_df.iloc[0]["library_name"], match_df.iloc[0]["library_type"], int(match_df.iloc[0]["max_accounts"])
-                
-                cfg_cats = compute_categories(match_df.iloc[0]["category_mode"], match_df.iloc[0]["custom_categories"])
+                raw_cats = match_df.iloc[0]["custom_categories"]
+                cfg_cats = [c.strip() for c in raw_cats.split(",") if c.strip()] if raw_cats else DEFAULT_CATEGORIES
                 
                 membership_log_df = conn.query("SELECT user_id FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
                 registered_member_ids = membership_log_df["user_id"].tolist() if not membership_log_df.empty else []
