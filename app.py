@@ -137,8 +137,11 @@ if "db_initialized" not in st.session_state:
 # ==========================================
 if st.session_state.logged_in and st.session_state.library_config is not None:
     active_code = st.session_state.library_config.get("access_code")
-    check_active_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=10)
-    if check_active_df.empty:
+    
+    with conn.session as session:
+        result = session.execute(text("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac"), {"ac": active_code}).mappings().fetchone()
+    
+    if not result:
         st.session_state.library_config = None
         if cookie_manager:
             try: cookie_manager.delete(cookie="library_access_code")
@@ -146,11 +149,11 @@ if st.session_state.logged_in and st.session_state.library_config is not None:
         st.warning("⚠️ The active session configuration access code was deleted by an administrator.")
     else:
         st.session_state.library_config.update({
-            "id": int(check_active_df.iloc[0]["id"]),
-            "name": check_active_df.iloc[0]["library_name"],
-            "type": check_active_df.iloc[0]["library_type"],
-            "max_accounts": int(check_active_df.iloc[0]["max_accounts"]),
-            "categories": compute_categories(check_active_df.iloc[0]["category_mode"], check_active_df.iloc[0]["custom_categories"])
+            "id": int(result["id"]),
+            "name": result["library_name"],
+            "type": result["library_type"],
+            "max_accounts": int(result["max_accounts"]),
+            "categories": compute_categories(result["category_mode"], result["custom_categories"])
         })
 
 # ==========================================
@@ -161,11 +164,12 @@ if not st.session_state.logged_in and not st.session_state.adding_new_account an
         vault_cookie = cookie_manager.get(cookie="library_vault_tokens")
         if vault_cookie:
             tokens = vault_cookie.split(",")
-            for t in tokens:
-                if not t.strip(): continue
-                token_check = conn.query("SELECT user_id, username FROM user_sessions WHERE token = :t", params={"t": t.strip()}, ttl=0)
-                if not token_check.empty:
-                    st.session_state.account_vault[token_check.iloc[0]["username"]] = int(token_check.iloc[0]["user_id"])
+            with conn.session as session:
+                for t in tokens:
+                    if not t.strip(): continue
+                    token_check = session.execute(text("SELECT user_id, username FROM user_sessions WHERE token = :t"), {"t": t.strip()}).mappings().fetchone()
+                    if token_check:
+                        st.session_state.account_vault[token_check["username"]] = int(token_check["user_id"])
             
             if st.session_state.account_vault:
                 st.session_state.logged_in = True
@@ -179,15 +183,16 @@ if st.session_state.logged_in and st.session_state.library_config is None and co
     try:
         saved_code = cookie_manager.get(cookie="library_access_code")
         if saved_code:
-            match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": saved_code}, ttl=0)
-            if not match_df.empty:
+            with conn.session as session:
+                match_res = session.execute(text("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac"), {"ac": saved_code}).mappings().fetchone()
+            if match_res:
                 st.session_state.library_config = {
-                    "id": int(match_df.iloc[0]["id"]),
-                    "name": match_df.iloc[0]["library_name"],
+                    "id": int(match_res["id"]),
+                    "name": match_res["library_name"],
                     "access_code": saved_code,
-                    "type": match_df.iloc[0]["library_type"],
-                    "max_accounts": int(match_df.iloc[0]["max_accounts"]),
-                    "categories": compute_categories(match_df.iloc[0]["category_mode"], match_df.iloc[0]["custom_categories"])
+                    "type": match_res["library_type"],
+                    "max_accounts": int(match_res["max_accounts"]),
+                    "categories": compute_categories(match_res["category_mode"], match_res["custom_categories"])
                 }
     except Exception:
         pass
@@ -195,7 +200,7 @@ if st.session_state.logged_in and st.session_state.library_config is None and co
 st.query_params.clear()
 
 # ==========================================
-# 6. LOGIN & REGISTRATION UI (SAFE MODE)
+# 6. LOGIN & REGISTRATION UI
 # ==========================================
 if not st.session_state.logged_in:
     st.title("📚 Book Library")
@@ -230,9 +235,11 @@ if not st.session_state.logged_in:
             if not username or not password:
                 st.error("Please fill in all fields.")
             else:
-                user_df = conn.query("SELECT id, username FROM users WHERE username = :u AND password = :p", params={"u": username, "p": make_hashes(password)}, ttl=0)
-                if not user_df.empty:
-                    uid = int(user_df.iloc[0]["id"])
+                with conn.session as session:
+                    user_res = session.execute(text("SELECT id, username FROM users WHERE username = :u AND password = :p"), {"u": username, "p": make_hashes(password)}).mappings().fetchone()
+                
+                if user_res:
+                    uid = int(user_res["id"])
                     st.session_state.adding_new_account = False
                     st.session_state.account_vault[username] = uid
                     st.session_state.logged_in = True
@@ -247,10 +254,7 @@ if not st.session_state.logged_in:
                             session.commit()
                         
                         existing_cookie = cookie_manager.get(cookie="library_vault_tokens")
-                        if existing_cookie:
-                            new_cookie_val = f"{existing_cookie},{secure_token}"
-                        else:
-                            new_cookie_val = secure_token
+                        new_cookie_val = f"{existing_cookie},{secure_token}" if existing_cookie else secure_token
                             
                         try:
                             cookie_manager.set(cookie="library_vault_tokens", val=new_cookie_val, expires_at=datetime.now() + pd.Timedelta(days=30))
@@ -353,14 +357,15 @@ with st.sidebar:
                 elif new_password != confirm_password:
                     st.error("New passwords do not match.")
                 else:
-                    user_data_df = conn.query("SELECT password FROM users WHERE id=:id", params={"id": int(st.session_state.user_id)}, ttl=0)
-                    if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
-                        with conn.session as session:
+                    with conn.session as session:
+                        db_pass = session.execute(text("SELECT password FROM users WHERE id=:id"), {"id": int(st.session_state.user_id)}).mappings().fetchone()
+                        
+                        if db_pass and make_hashes(current_password) == db_pass["password"]:
                             session.execute(text("UPDATE users SET password = :p WHERE id = :id"), {"p": make_hashes(new_password), "id": int(st.session_state.user_id)})
                             session.commit()
-                        st.success("Password changed successfully!")
-                    else:
-                        st.error("Incorrect current password.")
+                            st.success("Password changed successfully!")
+                        else:
+                            st.error("Incorrect current password.")
 
 # ==========================================
 # 8. ADMIN DASHBOARD
@@ -414,13 +419,15 @@ if is_admin:
                         
     with admin_tab2:
         st.subheader("Active System Access Codes Registry")
-        all_configs_df = conn.query("SELECT id, library_name, access_code, library_type, max_accounts, category_mode FROM library_configurations ORDER BY id DESC", ttl=0)
+        with conn.session as session:
+            all_configs = session.execute(text("SELECT id, library_name, access_code, library_type, max_accounts, category_mode FROM library_configurations ORDER BY id DESC")).mappings().fetchall()
         
-        if not all_configs_df.empty:
-            for _, cfg_row in all_configs_df.iterrows():
+        if all_configs:
+            for cfg_row in all_configs:
                 cfg_id = int(cfg_row["id"])
-                member_metrics_df = conn.query("SELECT COUNT(*) as count FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
-                occupied_seats = member_metrics_df.iloc[0]["count"]
+                with conn.session as session:
+                    member_count_res = session.execute(text("SELECT COUNT(*) as count FROM library_memberships WHERE config_id=:cid"), {"cid": cfg_id}).mappings().fetchone()
+                occupied_seats = member_count_res["count"] if member_count_res else 0
                 
                 c_col1, c_col2 = st.columns([4, 1])
                 with c_col1:
@@ -471,10 +478,11 @@ if is_admin:
             SELECT books.id AS book_id, users.username AS "Owner", books.title AS "Title", books.category AS "Category" 
             FROM books JOIN users ON books.user_id = users.id ORDER BY books.id ASC
         """
-        all_books_df = conn.query(books_query, ttl=0)
+        with conn.session as session:
+            all_books = session.execute(text(books_query)).mappings().fetchall()
         
-        if not all_books_df.empty:
-            for _, book_row in all_books_df.iterrows():
+        if all_books:
+            for book_row in all_books:
                 b_id = int(book_row["book_id"])
                 b_col1, b_col2 = st.columns([3, 1])
                 with b_col1:
@@ -501,20 +509,22 @@ if st.session_state.library_config is None:
         remember_code = st.checkbox("Remember this access code")
         
         if st.form_submit_button("Verify & Mount Storage Scope Layout"):
-            match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+            with conn.session as session:
+                match_res = session.execute(text("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac"), {"ac": entered_code}).mappings().fetchone()
             
-            if not match_df.empty:
-                cfg_id = int(match_df.iloc[0]["id"])
-                cfg_name = match_df.iloc[0]["library_name"]
-                cfg_type = match_df.iloc[0]["library_type"]
-                cfg_max = int(match_df.iloc[0]["max_accounts"])
-                cfg_cats = compute_categories(match_df.iloc[0]["category_mode"], match_df.iloc[0]["custom_categories"])
+            if match_res:
+                cfg_id = int(match_res["id"])
+                cfg_name = match_res["library_name"]
+                cfg_type = match_res["library_type"]
+                cfg_max = int(match_res["max_accounts"])
+                cfg_cats = compute_categories(match_res["category_mode"], match_res["custom_categories"])
                 
-                membership_log_df = conn.query("SELECT user_id FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
-                registered_member_ids = membership_log_df["user_id"].tolist() if not membership_log_df.empty else []
+                with conn.session as session:
+                    members_data = session.execute(text("SELECT user_id FROM library_memberships WHERE config_id=:cid"), {"cid": cfg_id}).mappings().fetchall()
+                registered_member_ids = [int(m["user_id"]) for m in members_data]
                 
                 grant_token_entry = False
-                if is_admin or st.session_state.user_id in registered_member_ids:
+                if is_admin or int(st.session_state.user_id) in registered_member_ids:
                     grant_token_entry = True
                 else:
                     if len(registered_member_ids) >= cfg_max:
@@ -542,37 +552,41 @@ if st.session_state.library_config is None:
 # ==========================================
 # 10. CORE LIBRARY APPLICATION
 # ==========================================
-# We safely cast cfg_id to standard int 
-raw_cfg = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", params={"ac": st.session_state.library_config['access_code']}, ttl=0)
-cfg_id = int(raw_cfg.iloc[0]["id"])
+# We load directly from the session state ID
+cfg_id = int(st.session_state.library_config["id"])
 
-# Super fast single-query extraction
-if is_admin:
-    query = """
-        SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id 
-        FROM books b JOIN users u ON b.user_id = u.id 
-        WHERE b.config_id = :cid ORDER BY b.id ASC
-    """
-else:
+# ------------------------------------------
+# SUPER FAST, UN-CACHED DATABASE PULLS
+# ------------------------------------------
+with conn.session as session:
+    # 1. Pull Books (Uncached for instant UI updates)
     query = """
         SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id 
         FROM books b 
-        JOIN library_memberships lm ON b.user_id = lm.user_id AND b.config_id = lm.config_id 
         JOIN users u ON b.user_id = u.id 
         WHERE b.config_id = :cid ORDER BY b.id ASC
     """
-
-books_df = conn.query(query, params={"cid": cfg_id}, ttl=0)
-books_list = books_df.to_dict('records') if not books_df.empty else []
+    books_list = [dict(row) for row in session.execute(text(query), {"cid": cfg_id}).mappings()]
+    
+    # 2. Pull Members Data
+    members_data = session.execute(text("""
+        SELECT u.id, u.username, lm.is_leader 
+        FROM library_memberships lm 
+        JOIN users u ON lm.user_id = u.id 
+        WHERE lm.config_id = :cid
+    """), {"cid": cfg_id}).mappings().fetchall()
+    members_list = [dict(m) for m in members_data]
 
 current_categories = st.session_state.library_config.get("categories", DEFAULT_CATEGORIES)
 
 st.header(f"{dynamic_icon} Workspace: {st.session_state.library_config['name']}")
 
-# Check membership metadata
-leader_df = conn.query("SELECT is_leader FROM library_memberships WHERE user_id = :uid AND config_id = :cid", params={"uid": int(st.session_state.user_id), "cid": cfg_id}, ttl=0)
-is_leader = leader_df.iloc[0]["is_leader"] if not leader_df.empty else False
-members_df = conn.query("SELECT u.id, u.username, lm.is_leader FROM library_memberships lm JOIN users u ON lm.user_id = u.id WHERE lm.config_id = :cid", params={"cid": cfg_id}, ttl=0)
+# Determine Leadership
+is_leader = False
+for m in members_list:
+    if int(m["id"]) == int(st.session_state.user_id) and m["is_leader"]:
+        is_leader = True
+        break
 
 # Dashboard Tools Sidebar
 with st.sidebar:
@@ -580,8 +594,8 @@ with st.sidebar:
     st.header("Workspace Tools")
     
     with st.expander("👥 View Everyone in Library"):
-        if not members_df.empty:
-            for _, m in members_df.iterrows():
+        if members_list:
+            for m in members_list:
                 st.markdown(f"- **{m['username']}** ({'👑 Leader' if m['is_leader'] else '👤 Member'})")
         else:
             st.info("No members recorded.")
@@ -619,16 +633,16 @@ with st.sidebar:
     if st.session_state.library_config["type"] == "Team" and not is_admin:
         st.divider()
         st.subheader("🚪 Exit Library Scope")
-        other_members = members_df[members_df["id"] != st.session_state.user_id]
+        other_members = [m for m in members_list if int(m["id"]) != int(st.session_state.user_id)]
         
-        if is_leader and not other_members.empty:
+        if is_leader and other_members:
             st.warning("⚠️ You are the Leader. Select a new leader before leaving.")
-            chosen_new_leader = st.selectbox("Transfer Leadership To:", other_members["username"].tolist())
+            chosen_new_leader = st.selectbox("Transfer Leadership To:", [m["username"] for m in other_members])
             
             if st.button("Transfer & Leave Library", type="secondary", use_container_width=True):
-                new_lead_id = int(other_members[other_members["username"] == chosen_new_leader]["id"].values[0])
+                new_lead_id = next(m["id"] for m in other_members if m["username"] == chosen_new_leader)
                 with conn.session as session:
-                    session.execute(text("UPDATE library_memberships SET is_leader = TRUE WHERE config_id = :cid AND user_id = :uid"), {"cid": cfg_id, "uid": new_lead_id})
+                    session.execute(text("UPDATE library_memberships SET is_leader = TRUE WHERE config_id = :cid AND user_id = :uid"), {"cid": cfg_id, "uid": int(new_lead_id)})
                     session.execute(text("DELETE FROM library_memberships WHERE config_id = :cid AND user_id = :uid"), {"cid": cfg_id, "uid": int(st.session_state.user_id)})
                     session.commit()
                 st.session_state.library_config = None
@@ -657,7 +671,9 @@ with st.sidebar:
                 session.commit()
             st.rerun()
 
-# Dashboard Body Tables & Charts
+# ------------------------------------------
+# DASHBOARD BODY
+# ------------------------------------------
 col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("Library Books")
@@ -682,7 +698,7 @@ if books_list:
     for i, book in enumerate(books_list):
         b_id = int(book["id"])
         with gallery_cols[i % 3]:
-            can_modify = is_admin or is_leader or (int(book["user_id"]) == st.session_state.user_id)
+            can_modify = is_admin or is_leader or (int(book["user_id"]) == int(st.session_state.user_id))
             
             if st.session_state.editing_book_id == b_id:
                 st.markdown(f"#### 📝 Edit Details")
@@ -741,7 +757,7 @@ if books_list:
                 with action_del:
                     if st.button(f"🗑️ Delete", key=f"del_{b_id}", use_container_width=True):
                         with conn.session as session:
-                            session.execute(text("DELETE FROM books WHERE id = :bid AND user_id = :uid"), {"bid": b_id, "uid": int(st.session_state.user_id)})
+                            session.execute(text("DELETE FROM books WHERE id = :bid AND user_id = :uid"), {"bid": b_id, "uid": int(book["user_id"])})
                             session.commit()
                         st.rerun()
 else:
