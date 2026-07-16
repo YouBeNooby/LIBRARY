@@ -18,6 +18,7 @@ if "editing_book_id" not in st.session_state: st.session_state.editing_book_id =
 if "library_config" not in st.session_state: st.session_state.library_config = None
 if "account_vault" not in st.session_state: st.session_state.account_vault = {}
 if "adding_new_account" not in st.session_state: st.session_state.adding_new_account = False
+if "ignore_library_cookie" not in st.session_state: st.session_state.ignore_library_cookie = False
 
 # Database and Cookie setup
 conn = st.connection("postgresql", type="sql")
@@ -179,7 +180,8 @@ if not st.session_state.logged_in and not st.session_state.adding_new_account an
     except Exception:
         pass
 
-if st.session_state.logged_in and st.session_state.library_config is None and cookie_manager:
+# The ignore_library_cookie flag ensures we don't instantly read a cookie we just asked the browser to delete
+if st.session_state.logged_in and st.session_state.library_config is None and cookie_manager and not st.session_state.ignore_library_cookie:
     try:
         saved_code = cookie_manager.get(cookie="library_access_code")
         if saved_code:
@@ -293,6 +295,7 @@ with st.sidebar:
             st.session_state.username = switch_to
             st.session_state.user_id = int(st.session_state.account_vault[switch_to])
             st.session_state.library_config = None
+            st.session_state.ignore_library_cookie = True
             if cookie_manager:
                 try: cookie_manager.delete(cookie="library_access_code")
                 except Exception: pass
@@ -309,6 +312,7 @@ with st.sidebar:
         st.session_state.adding_new_account = True
         st.session_state.logged_in = False
         st.session_state.library_config = None
+        st.session_state.ignore_library_cookie = True
         if cookie_manager:
             try: cookie_manager.delete(cookie="library_access_code")
             except Exception: pass
@@ -318,8 +322,10 @@ with st.sidebar:
     
     if st.session_state.library_config is not None:
         st.info(f"📋 Scope: `{st.session_state.library_config['name']}` ({st.session_state.library_config['type']})")
+        
         if st.button("🔄 Change Access Code", use_container_width=True):
             st.session_state.library_config = None
+            st.session_state.ignore_library_cookie = True # LOCK: Prevents auto-login loop
             if cookie_manager:
                 try: cookie_manager.delete(cookie="library_access_code")
                 except Exception: pass
@@ -539,6 +545,7 @@ if st.session_state.library_config is None:
                 
                 if grant_token_entry:
                     st.session_state.library_config = {"id": cfg_id, "name": cfg_name, "access_code": entered_code, "type": cfg_type, "max_accounts": cfg_max, "categories": cfg_cats}
+                    st.session_state.ignore_library_cookie = False # UNLOCK: Safe to read cookies again
                     if remember_code and cookie_manager:
                         try:
                             cookie_manager.set(cookie="library_access_code", val=entered_code, expires_at=datetime.now() + pd.Timedelta(days=30))
@@ -560,12 +567,21 @@ cfg_id = int(st.session_state.library_config["id"])
 # ------------------------------------------
 with conn.session as session:
     # 1. Pull Books (Uncached for instant UI updates)
-    query = """
-        SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id 
-        FROM books b 
-        JOIN users u ON b.user_id = u.id 
-        WHERE b.config_id = :cid ORDER BY b.id ASC
-    """
+    if is_admin:
+        query = """
+            SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id 
+            FROM books b 
+            JOIN users u ON b.user_id = u.id 
+            WHERE b.config_id = :cid ORDER BY b.id ASC
+        """
+    else:
+        query = """
+            SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id 
+            FROM books b 
+            JOIN library_memberships lm ON b.user_id = lm.user_id AND b.config_id = lm.config_id 
+            JOIN users u ON b.user_id = u.id 
+            WHERE b.config_id = :cid ORDER BY b.id ASC
+        """
     books_list = [dict(row) for row in session.execute(text(query), {"cid": cfg_id}).mappings()]
     
     # 2. Pull Members Data
@@ -646,6 +662,7 @@ with st.sidebar:
                     session.execute(text("DELETE FROM library_memberships WHERE config_id = :cid AND user_id = :uid"), {"cid": cfg_id, "uid": int(st.session_state.user_id)})
                     session.commit()
                 st.session_state.library_config = None
+                st.session_state.ignore_library_cookie = True # LOCK: Prevents auto-login loop
                 if cookie_manager:
                     try: cookie_manager.delete(cookie="library_access_code")
                     except Exception: pass
@@ -656,6 +673,7 @@ with st.sidebar:
                     session.execute(text("DELETE FROM library_memberships WHERE config_id = :cid AND user_id = :uid"), {"cid": cfg_id, "uid": int(st.session_state.user_id)})
                     session.commit()
                 st.session_state.library_config = None
+                st.session_state.ignore_library_cookie = True # LOCK: Prevents auto-login loop
                 if cookie_manager:
                     try: cookie_manager.delete(cookie="library_access_code")
                     except Exception: pass
