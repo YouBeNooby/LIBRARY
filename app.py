@@ -21,8 +21,6 @@ if "adding_new_account" not in st.session_state: st.session_state.adding_new_acc
 
 # Database and Cookie setup
 conn = st.connection("postgresql", type="sql")
-
-# FIX: Instantiate directly with a unique key. No cache decorator allowed for widgets!
 try:
     cookie_manager = stx.CookieManager(key="library_cookie_manager")
 except Exception:
@@ -82,9 +80,12 @@ def init_db():
         """))
         session.commit()
 
+    # Safely upgrade tables to include new photo features and category modes
     try:
         with conn.session as session:
             session.execute(text("ALTER TABLE library_configurations ADD COLUMN IF NOT EXISTS category_mode TEXT DEFAULT 'Default Only'"))
+            session.execute(text("ALTER TABLE books ADD COLUMN IF NOT EXISTS image_bytes BYTEA"))
+            session.execute(text("ALTER TABLE books ADD COLUMN IF NOT EXISTS image_name TEXT"))
             session.commit()
     except Exception:
         pass
@@ -136,7 +137,7 @@ if "db_initialized" not in st.session_state:
 # ==========================================
 if st.session_state.logged_in and st.session_state.library_config is not None:
     active_code = st.session_state.library_config.get("access_code")
-    check_active_df = conn.query("SELECT library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
+    check_active_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=10)
     if check_active_df.empty:
         st.session_state.library_config = None
         if cookie_manager:
@@ -144,13 +145,13 @@ if st.session_state.logged_in and st.session_state.library_config is not None:
             except Exception: pass
         st.warning("⚠️ The active session configuration access code was deleted by an administrator.")
     else:
-        st.session_state.library_config["name"] = check_active_df.iloc[0]["library_name"]
-        st.session_state.library_config["type"] = check_active_df.iloc[0]["library_type"]
-        st.session_state.library_config["max_accounts"] = int(check_active_df.iloc[0]["max_accounts"])
-        st.session_state.library_config["categories"] = compute_categories(
-            check_active_df.iloc[0]["category_mode"], 
-            check_active_df.iloc[0]["custom_categories"]
-        )
+        st.session_state.library_config.update({
+            "id": int(check_active_df.iloc[0]["id"]),
+            "name": check_active_df.iloc[0]["library_name"],
+            "type": check_active_df.iloc[0]["library_type"],
+            "max_accounts": int(check_active_df.iloc[0]["max_accounts"]),
+            "categories": compute_categories(check_active_df.iloc[0]["category_mode"], check_active_df.iloc[0]["custom_categories"])
+        })
 
 # ==========================================
 # 5. MULTI-VAULT COOKIE LOGIC
@@ -166,7 +167,6 @@ if not st.session_state.logged_in and not st.session_state.adding_new_account an
                 if not token_check.empty:
                     st.session_state.account_vault[token_check.iloc[0]["username"]] = int(token_check.iloc[0]["user_id"])
             
-            # Auto-login to the first account found
             if st.session_state.account_vault:
                 st.session_state.logged_in = True
                 first_user = list(st.session_state.account_vault.keys())[0]
@@ -182,6 +182,7 @@ if st.session_state.logged_in and st.session_state.library_config is None and co
             match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": saved_code}, ttl=0)
             if not match_df.empty:
                 st.session_state.library_config = {
+                    "id": int(match_df.iloc[0]["id"]),
                     "name": match_df.iloc[0]["library_name"],
                     "access_code": saved_code,
                     "type": match_df.iloc[0]["library_type"],
@@ -191,7 +192,6 @@ if st.session_state.logged_in and st.session_state.library_config is None and co
     except Exception:
         pass
 
-# Ensure URL parameter hacks are completely locked down
 st.query_params.clear()
 
 # ==========================================
@@ -418,7 +418,7 @@ if is_admin:
         
         if not all_configs_df.empty:
             for _, cfg_row in all_configs_df.iterrows():
-                cfg_id = int(cfg_row["id"]) # Type cast to avoid numpy errors
+                cfg_id = int(cfg_row["id"])
                 member_metrics_df = conn.query("SELECT COUNT(*) as count FROM library_memberships WHERE config_id=:cid", params={"cid": cfg_id}, ttl=0)
                 occupied_seats = member_metrics_df.iloc[0]["count"]
                 
@@ -467,7 +467,10 @@ if is_admin:
             
     with admin_tab4:
         st.subheader("Global Library Master Logs")
-        books_query = "SELECT books.id AS book_id, users.username AS \"Owner\", books.title AS \"Title\", books.category AS \"Category\" FROM books JOIN users ON books.user_id = users.id ORDER BY books.id ASC"
+        books_query = """
+            SELECT books.id AS book_id, users.username AS "Owner", books.title AS "Title", books.category AS "Category" 
+            FROM books JOIN users ON books.user_id = users.id ORDER BY books.id ASC
+        """
         all_books_df = conn.query(books_query, ttl=0)
         
         if not all_books_df.empty:
@@ -501,7 +504,7 @@ if st.session_state.library_config is None:
             match_df = conn.query("SELECT id, library_name, library_type, max_accounts, custom_categories, category_mode FROM library_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
             
             if not match_df.empty:
-                cfg_id = int(match_df.iloc[0]["id"]) # Type cast integer
+                cfg_id = int(match_df.iloc[0]["id"])
                 cfg_name = match_df.iloc[0]["library_name"]
                 cfg_type = match_df.iloc[0]["library_type"]
                 cfg_max = int(match_df.iloc[0]["max_accounts"])
@@ -525,7 +528,7 @@ if st.session_state.library_config is None:
                             session.commit()
                 
                 if grant_token_entry:
-                    st.session_state.library_config = {"name": cfg_name, "access_code": entered_code, "type": cfg_type, "max_accounts": cfg_max, "categories": cfg_cats}
+                    st.session_state.library_config = {"id": cfg_id, "name": cfg_name, "access_code": entered_code, "type": cfg_type, "max_accounts": cfg_max, "categories": cfg_cats}
                     if remember_code and cookie_manager:
                         try:
                             cookie_manager.set(cookie="library_access_code", val=entered_code, expires_at=datetime.now() + pd.Timedelta(days=30))
@@ -539,17 +542,28 @@ if st.session_state.library_config is None:
 # ==========================================
 # 10. CORE LIBRARY APPLICATION
 # ==========================================
-# Securely fetching books and converting to list of dicts. Ensuring cfg_id is INT.
+# We safely cast cfg_id to standard int 
 raw_cfg = conn.query("SELECT id FROM library_configurations WHERE access_code=:ac", params={"ac": st.session_state.library_config['access_code']}, ttl=0)
 cfg_id = int(raw_cfg.iloc[0]["id"])
 
+# Super fast single-query extraction
 if is_admin:
-    query = "SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id FROM books b JOIN users u ON b.user_id = u.id WHERE b.config_id = :cid ORDER BY b.id ASC"
+    query = """
+        SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id 
+        FROM books b JOIN users u ON b.user_id = u.id 
+        WHERE b.config_id = :cid ORDER BY b.id ASC
+    """
 else:
-    query = "SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id FROM books b JOIN library_memberships lm ON b.user_id = lm.user_id AND b.config_id = lm.config_id JOIN users u ON b.user_id = u.id WHERE b.config_id = :cid ORDER BY b.id ASC"
+    query = """
+        SELECT b.id, b.title, b.category, b.image_bytes, b.image_name, u.username, b.user_id 
+        FROM books b 
+        JOIN library_memberships lm ON b.user_id = lm.user_id AND b.config_id = lm.config_id 
+        JOIN users u ON b.user_id = u.id 
+        WHERE b.config_id = :cid ORDER BY b.id ASC
+    """
 
-with conn.session as session:
-    books_list = [dict(row) for row in session.execute(text(query), {"cid": cfg_id}).mappings()]
+books_df = conn.query(query, params={"cid": cfg_id}, ttl=0)
+books_list = books_df.to_dict('records') if not books_df.empty else []
 
 current_categories = st.session_state.library_config.get("categories", DEFAULT_CATEGORIES)
 
@@ -582,21 +596,24 @@ with st.sidebar:
         if title_input.strip() == "":
             st.error("Please enter a book title.")
         else:
-            with conn.session as session:
-                session.execute(text("""
-                    INSERT INTO books (config_id, user_id, title, category, image_bytes, image_name)
-                    VALUES (:cid, :uid, :t, :c, :img, :name)
-                """), {
-                    "cid": cfg_id, 
-                    "uid": int(st.session_state.user_id), 
-                    "t": title_input.strip(), 
-                    "c": category_input, 
-                    "img": uploaded_file.getvalue() if uploaded_file else None, 
-                    "name": uploaded_file.name if uploaded_file else None
-                })
-                session.commit()
-            st.success(f"Added: {title_input}")
-            st.rerun()
+            try:
+                with conn.session as session:
+                    session.execute(text("""
+                        INSERT INTO books (config_id, user_id, title, category, image_bytes, image_name)
+                        VALUES (:cid, :uid, :t, :c, :img, :name)
+                    """), {
+                        "cid": cfg_id, 
+                        "uid": int(st.session_state.user_id), 
+                        "t": title_input.strip(), 
+                        "c": category_input, 
+                        "img": uploaded_file.getvalue() if uploaded_file else None, 
+                        "name": uploaded_file.name if uploaded_file else None
+                    })
+                    session.commit()
+                st.success(f"Added: {title_input}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Database Error: {e}")
 
     # Team Exiting Logic
     if st.session_state.library_config["type"] == "Team" and not is_admin:
@@ -665,7 +682,7 @@ if books_list:
     for i, book in enumerate(books_list):
         b_id = int(book["id"])
         with gallery_cols[i % 3]:
-            can_modify = is_admin or is_leader or (book["user_id"] == st.session_state.user_id)
+            can_modify = is_admin or is_leader or (int(book["user_id"]) == st.session_state.user_id)
             
             if st.session_state.editing_book_id == b_id:
                 st.markdown(f"#### 📝 Edit Details")
@@ -682,21 +699,24 @@ if books_list:
                         cancel_changes = st.form_submit_button("Cancel", use_container_width=True)
                     
                     if save_changes and edit_title.strip() != "":
-                        with conn.session as session:
-                            if edit_file:
-                                session.execute(text("""
-                                    UPDATE books SET title = :t, category = :c, image_bytes = :img, image_name = :name
-                                    WHERE id = :bid AND user_id = :uid
-                                """), {"t": edit_title.strip(), "c": edit_category, "img": edit_file.getvalue(), "name": edit_file.name, "bid": b_id, "uid": int(st.session_state.user_id)})
-                            else:
-                                session.execute(text("""
-                                    UPDATE books SET title = :t, category = :c
-                                    WHERE id = :bid AND user_id = :uid
-                                """), {"t": edit_title.strip(), "c": edit_category, "bid": b_id, "uid": int(st.session_state.user_id)})
-                            session.commit()
-                        st.session_state.editing_book_id = None
-                        st.rerun()
-                        
+                        try:
+                            with conn.session as session:
+                                if edit_file:
+                                    session.execute(text("""
+                                        UPDATE books SET title = :t, category = :c, image_bytes = :img, image_name = :name
+                                        WHERE id = :bid AND user_id = :uid
+                                    """), {"t": edit_title.strip(), "c": edit_category, "img": edit_file.getvalue(), "name": edit_file.name, "bid": b_id, "uid": int(st.session_state.user_id)})
+                                else:
+                                    session.execute(text("""
+                                        UPDATE books SET title = :t, category = :c
+                                        WHERE id = :bid AND user_id = :uid
+                                    """), {"t": edit_title.strip(), "c": edit_category, "bid": b_id, "uid": int(st.session_state.user_id)})
+                                session.commit()
+                            st.session_state.editing_book_id = None
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error saving: {e}")
+                            
                     if cancel_changes:
                         st.session_state.editing_book_id = None
                         st.rerun()
